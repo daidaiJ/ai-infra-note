@@ -1,0 +1,207 @@
+# ============================================================
+# Kueue + Volcano 集成配置示例
+# ============================================================
+#
+# 【集成方式】
+# 1. Kueue管理队列配额（ClusterQueue、LocalQueue）
+# 2. Volcano Job通过annotation关联Kueue队列
+# 3. Kueue分配配额后，Volcano执行Gang调度
+#
+# 【核心配置】
+# - Volcano Job添加annotation: kueue.x-k8s.io/queue-name
+# - Kueue接管Job的队列管理
+# - Volcano保持Gang调度能力
+
+---
+# ============================================================
+# 步骤1: 创建命名空间
+# ============================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: training-ns
+  labels:
+    purpose: training
+    team: core-team
+
+---
+# ============================================================
+# 步骤2: 创建PriorityClass
+# ============================================================
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: high-priority
+value: 1000
+globalDefault: false
+description: "高优先级训练任务"
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: medium-priority
+value: 500
+globalDefault: true
+description: "中等优先级"
+
+---
+# ============================================================
+# 步骤3: 创建Kueue ClusterQueue（集群队列）
+# ============================================================
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: training-cluster-queue
+spec:
+  # ============================================================
+  # 命名空间选择器
+  # ============================================================
+  namespaceSelector:
+    matchLabels:
+      purpose: training
+
+  # ============================================================
+  # Cohort共享池
+  # ============================================================
+  cohort: gpu-shared-cohort
+
+  # ============================================================
+  # 资源配额
+  # ============================================================
+  resourceGroups:
+    - coveredResources: ["nvidia.com/gpu", "cpu", "memory"]
+      flavors:
+        - name: default-flavor
+          resources:
+            - name: "nvidia.com/gpu"
+              nominalQuota: 50      # 固定配额50张GPU
+              borrowingLimit: 20    # 可借用20张
+
+            - name: "cpu"
+              nominalQuota: "200"
+
+            - name: "memory"
+              nominalQuota: "400Gi"
+
+  # ============================================================
+  # 抢占策略
+  # ============================================================
+  preemption:
+    withinClusterQueue:
+      policy: LowerPriority
+    reclaimWithinCohort: Any
+
+---
+# ============================================================
+# 步骤4: 创建Kueue LocalQueue（本地队列）
+# ============================================================
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: training-local-queue
+  namespace: training-ns
+spec:
+  clusterQueue: training-cluster-queue
+
+---
+# ============================================================
+# 步骤5: 创建Volcano Queue（Volcano队列）
+# ============================================================
+apiVersion: scheduling.volcano.sh/v1beta1
+kind: Queue
+metadata:
+  name: volcano-training-queue
+spec:
+  weight: 3
+  capability:
+    cpu: "200"
+    memory: "400Gi"
+    nvidia.com/gpu: "50"
+  state: Open
+
+---
+# ============================================================
+# 步骤6: 创建Volcano Job（Kueue接管队列管理）
+# ============================================================
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: distributed-training-kueue
+  namespace: training-ns
+  annotations:
+    # ============================================================
+    # 关键：Kueue接管此Job的队列管理
+    # ============================================================
+    kueue.x-k8s.io/queue-name: training-local-queue
+spec:
+  # ============================================================
+  # Volcano负责Gang调度
+  # ============================================================
+  minAvailable: 8              # 必须同时调度8个Pod
+
+  # ============================================================
+  # 关联Volcano队列（可选）
+  # ============================================================
+  queue: volcano-training-queue
+
+  # ============================================================
+  # 调度插件配置
+  # ============================================================
+  plugins:
+    gang:
+      minAvailable: 8
+    share: {}
+    priority: {}
+
+  # ============================================================
+  # 优先级
+  # ============================================================
+  priorityClassName: high-priority
+
+  # ============================================================
+  # 任务模板
+  # ============================================================
+  tasks:
+    - replicas: 8
+      name: worker
+      template:
+        spec:
+          containers:
+            - name: pytorch
+              image: pytorch/pytorch:2.0.1-cuda11.8
+              command: ["python", "train.py"]
+              resources:
+                requests:
+                  cpu: "4"
+                  memory: "16Gi"
+                  nvidia.com/gpu: "1"
+                limits:
+                  nvidia.com/gpu: "1"
+          restartPolicy: OnFailure
+
+---
+# ============================================================
+# 步骤7: 创建Volcano Job（中优先级）
+# ============================================================
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: research-training-kueue
+  namespace: training-ns
+  annotations:
+    kueue.x-k8s.io/queue-name: training-local-queue
+spec:
+  minAvailable: 4
+  priorityClassName: medium-priority
+  tasks:
+    - replicas: 4
+      name: worker
+      template:
+        spec:
+          containers:
+            - name: tensorflow
+              image: tensorflow/tensorflow:latest-gpu
+              resources:
+                limits:
+                  nvidia.com/gpu: "2"

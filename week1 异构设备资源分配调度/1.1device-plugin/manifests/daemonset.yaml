@@ -1,0 +1,257 @@
+# ============================================================
+# GPU Device Plugin DaemonSet 部署清单
+# ============================================================
+#
+# Device Plugin 以 DaemonSet 形式运行在每个 GPU 节点上
+# 需要：
+# 1. 访问 kubelet 的 plugin 目录（注册插件）
+# 2. 访问宿主机设备文件（发现和分配设备）
+# 3. 访问驱动库目录（挂载到容器）
+
+---
+# ============================================================
+# 1. DaemonSet: Device Plugin 主程序
+# ============================================================
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gpu-device-plugin
+  namespace: kube-system
+  labels:
+    app: gpu-device-plugin
+spec:
+  selector:
+    matchLabels:
+      app: gpu-device-plugin
+  template:
+    metadata:
+      labels:
+        app: gpu-device-plugin
+    spec:
+      # 只在 GPU 节点上运行
+      nodeSelector:
+        gpu: "true"  # 或使用 node affinity
+
+      # 需要特权模式访问设备
+      containers:
+        - name: device-plugin
+          image: your-registry/gpu-device-plugin:v1.0.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/local/bin/gpu-device-plugin
+            - --resource-name=example.com/gpu
+            - --log-level=4
+
+          # ========================================================
+          # 安全上下文
+          # ========================================================
+          # Device Plugin 需要：
+          # - 特权模式：访问 /dev 设备文件
+          # - root 用户：访问 kubelet socket
+          securityContext:
+            privileged: true  # 特权容器
+            runAsUser: 0      # root 用户
+
+          # ========================================================
+          # 挂载配置
+          # ========================================================
+          # 需要访问的宿主机目录：
+          # 1. kubelet plugin 目录：注册/通信
+          # 2. 设备目录：发现 GPU 设备
+          # 3. 驱动库目录：挂载到分配的容器
+          volumeMounts:
+            # kubelet plugin 目录（注册和通信）
+            - name: kubelet-plugins
+              mountPath: /var/lib/kubelet/plugins
+              readOnly: false  # 需要创建 socket 文件
+
+            # kubelet plugin-registry 目录
+            - name: kubelet-plugin-registry
+              mountPath: /var/lib/kubelet/plugins_registry
+              readOnly: false
+
+            # 设备目录（发现和分配）
+            - name: dev
+              mountPath: /dev
+
+            # NVIDIA 驱动库（挂载到分配的容器）
+            - name: nvidia-driver
+              mountPath: /usr/lib/x86_64-linux-gnu
+              readOnly: true
+
+            # CUDA 目录
+            - name: cuda
+              mountPath: /usr/local/cuda
+              readOnly: true
+
+            # sysfs（设备拓扑信息）
+            - name: sysfs
+              mountPath: /sys
+              readOnly: true
+
+          # ========================================================
+          # 资源限制
+          # ========================================================
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+
+      # ========================================================
+      # Volume 定义
+      # ========================================================
+      volumes:
+        - name: kubelet-plugins
+          hostPath:
+            path: /var/lib/kubelet/plugins
+            type: DirectoryOrCreate
+
+        - name: kubelet-plugin-registry
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry
+            type: DirectoryOrCreate
+
+        - name: dev
+          hostPath:
+            path: /dev
+
+        - name: nvidia-driver
+          hostPath:
+            path: /usr/lib/x86_64-linux-gnu
+
+        - name: cuda
+          hostPath:
+            path: /usr/local/cuda
+
+        - name: sysfs
+          hostPath:
+            path: /sys
+
+---
+# ============================================================
+# 2. 使用 Device Plugin 的 Pod 示例
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-workload-example
+spec:
+  containers:
+    - name: gpu-container
+      image: nvidia/cuda:12.0-runtime-ubuntu22.04
+      command: ["nvidia-smi"]
+
+      # ========================================================
+      # 请求 Device Plugin 分配的设备
+      # ========================================================
+      # 资源名称: <plugin-resource-name>/<count>
+      # example.com/gpu 表示请求 1 个 GPU 设备
+      #
+      # 当 Pod 创建时：
+      # 1. kubelet 调用 Device Plugin 的 Allocate 接口
+      # 2. Device Plugin 返回:
+      #    - 环境变量 (NVIDIA_VISIBLE_DEVICES 等)
+      #    - 挂载点 (驱动库、CUDA)
+      #    - 设备文件 (/dev/nvidia*)
+      # 3. kubelet 将这些配置注入到 Pod
+      resources:
+        limits:
+          example.com/gpu: 1  # 请求 1 个 GPU
+          memory: "8Gi"
+          cpu: "4"
+
+---
+# ============================================================
+# 3. 多 GPU 请求示例
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: multi-gpu-workload
+spec:
+  containers:
+    - name: training-container
+      image: pytorch/pytorch:latest
+      command: ["python", "train.py"]
+      resources:
+        limits:
+          example.com/gpu: 2  # 请求 2 个 GPU
+          memory: "32Gi"
+          cpu: "8"
+
+---
+# ============================================================
+# 4. DeviceClass 示例（Kubernetes 1.26+）
+# ============================================================
+# DeviceClass 允许定义设备分配的配置和策略
+#
+apiVersion: resource.k8s.io/v1
+kind: DeviceClass
+metadata:
+  name: gpu-class
+spec:
+  # 关联的 Device Plugin
+  deviceTypes:
+    - example.com/gpu
+
+  # 分配策略配置
+  # Device Plugin 可通过 GetPreferredAllocation 提供推荐
+  selectors:
+    - cel:
+        expression: "device.driver == 'gpu-device-plugin'"
+
+  # 配置参数（传递给 Allocate）
+  config:
+    - deviceType: example.com/gpu
+      configData:
+        mountDriverLibraries: true
+        mountCUDATools: true
+        setEnvironmentVariables: true
+
+---
+# ============================================================
+# 5. ResourceClaim 示例（Kubernetes 1.26+）
+# ============================================================
+# ResourceClaim 允许动态申请和管理设备资源
+#
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: gpu-claim
+spec:
+  # 引用 DeviceClass
+  deviceClassName: gpu-class
+
+  # 请求设备数量
+  devices:
+    requests:
+      - name: "gpu-0"
+        deviceType: example.com/gpu
+        allocationMode: ExactCount
+        count: 1
+
+---
+# 6. 使用 ResourceClaim 的 Pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-claim-pod
+spec:
+  # 引用 ResourceClaim
+  resourceClaims:
+    - name: gpu-0
+      claim:
+        name: gpu-claim
+
+  containers:
+    - name: main
+      image: nvidia/cuda:12.0-runtime
+      command: ["python", "inference.py"]
+
+      # 使用 ResourceClaim
+      resources:
+        claims:
+          - name: gpu-0

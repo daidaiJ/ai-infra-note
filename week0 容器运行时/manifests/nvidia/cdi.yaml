@@ -1,0 +1,140 @@
+# ============================================================
+# CDI 设备描述文件示例
+# ============================================================
+#
+# 【核心配置】
+# - cdikind: CDI 规范版本
+# - kind: 设备类型标识
+# - devices: 设备列表及其配置
+#
+# 【使用方式】
+# 1. 由 nvidia-ctk cdi generate 自动生成
+# 2. 放置在 /etc/cdi/ 目录
+# 3. 运行时自动读取
+#
+# 【注意事项】
+# - 此文件为示例，实际配置需根据节点 GPU 自动生成
+# - 使用 nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+#
+# ============================================================
+
+cdiVersion: 0.5.0
+kind: nvidia.com/gpu
+
+# ============================================================
+# 设备列表
+# ============================================================
+devices:
+  # GPU 设备 0
+  - name: gpu0
+    deviceType: gpu
+    attributes:
+      index: "0"
+      uuid: "GPU-00000000-0000-0000-0000-000000000000"
+    containerEdits:
+      # 设备节点
+      deviceNodes:
+        - path: /dev/nvidia0
+          type: c
+          major: 195
+          minor: 0
+        - path: /dev/nvidiactl
+          type: c
+          major: 195
+          minor: 255
+        - path: /dev/nvidia-uvm
+          type: c
+          major: 195
+          minor: 0
+        - path: /dev/nvidia-uvm-tools
+          type: c
+          major: 195
+          minor: 0
+
+      # 挂载点（驱动库）
+      mounts:
+        - hostPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.525.89.02
+          containerPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.525.89.02
+          options:
+            - ro
+            - nosuid
+            - nodev
+            - bind
+
+      # 环境变量
+      env:
+        - NVIDIA_VISIBLE_DEVICES=0
+        - CUDA_VISIBLE_DEVICES=0
+
+  # GPU 设备 1
+  - name: gpu1
+    deviceType: gpu
+    attributes:
+      index: "1"
+      uuid: "GPU-11111111-1111-1111-1111-111111111111"
+    containerEdits:
+      deviceNodes:
+        - path: /dev/nvidia1
+          type: c
+          major: 195
+          minor: 1
+        - path: /dev/nvidiactl
+          type: c
+          major: 195
+          minor: 255
+        - path: /dev/nvidia-uvm
+          type: c
+          major: 195
+          minor: 0
+        - path: /dev/nvidia-uvm-tools
+          type: c
+          major: 195
+          minor: 0
+
+      mounts:
+        - hostPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.525.89.02
+          containerPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.525.89.02
+          options:
+            - ro
+            - nosuid
+            - nodev
+            - bind
+
+      env:
+        - NVIDIA_VISIBLE_DEVICES=1
+        - CUDA_VISIBLE_DEVICES=1
+
+# ============================================================
+# 全局容器编辑
+# ============================================================
+containerEdits:
+  # 全局环境变量
+  env:
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - __NVIDIA_DRIVER_CAPABILITIES_OVERRIDE=all
+
+  # 全局挂载点
+  mounts:
+    - hostPath: /usr/bin/nvidia-smi
+      containerPath: /usr/bin/nvidia-smi
+      options:
+        - ro
+        - nosuid
+        - nodev
+        - bind
+
+    - hostPath: /usr/lib/x86_64-linux-gnu/libnvidia-cuda.so.525.89.02
+      containerPath: /usr/lib/x86_64-linux-gnu/libcuda.so.1
+      options:
+        - ro
+        - nosuid
+        - nodev
+        - bind
+
+    - hostPath: /usr/local/cuda
+      containerPath: /usr/local/cuda
+      options:
+        - ro
+        - nosuid
+        - nodev
+        - bind

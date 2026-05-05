@@ -1,0 +1,198 @@
+# ============================================================
+# SGLang HiCache 部署配置
+# ============================================================
+#
+# 【核心功能】
+# - SGLang原生集成HiCache三级缓存
+# - L1(GPU)/L2(CPU)/L3(分布式可选)
+#
+# 【关键配置】
+# - --enable-hierarchical-cache: 启用分层缓存
+# - --hicache-ratio: L2/GPU内存比例
+# - --hicache-storage-backend: L3存储后端（可选）
+#
+# ============================================================
+
+---
+# ============================================================
+# SGLang HiCache基本配置
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sglang-hicache
+  labels:
+    app: sglang-hicache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sglang-hicache
+  template:
+    metadata:
+      labels:
+        app: sglang-hicache
+    spec:
+      containers:
+        - name: sglang
+          image: lmsysorg/sglang:latest
+          command:
+            - python
+            - -m
+            - sglang.launch_server
+            # ============================================================
+            # 基本参数
+            # ============================================================
+            - --model-path=Qwen/Qwen3-8B
+            - --tp=2
+            - --port=30000
+            - --mem-fraction-static=0.85
+            # ============================================================
+            # HiCache核心配置
+            # ============================================================
+            - --enable-hierarchical-cache
+            - --hicache-ratio=2
+            - --page-size=64
+            # ============================================================
+            # I/O与内存布局
+            # ============================================================
+            - --hicache-mem-layout=page_first_direct
+            - --hicache-io-backend=direct
+            # ============================================================
+            # 写回策略
+            # ============================================================
+            - --hicache-write-policy=write_through
+
+          ports:
+            - containerPort: 30000
+              name: sglang-api
+
+          resources:
+            limits:
+              nvidia.com/gpu: 2
+              memory: 64Gi
+            requests:
+              nvidia.com/gpu: 2
+              memory: 64Gi
+
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+            - name: rdma-devices
+              mountPath: /dev/infiniband  # RDMA设备（可选）
+
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc
+        - name: rdma-devices
+          hostPath:
+            path: /dev/infiniband
+
+---
+# ============================================================
+# SGLang + Mooncake L3后端配置
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sglang-hicache-mooncake
+spec:
+  containers:
+    - name: sglang
+      image: lmsysorg/sglang:latest
+      command:
+        - python
+        - -m
+        - sglang.launch_server
+        - --model-path=Qwen/Qwen3-8B
+        - --tp=2
+        - --enable-hierarchical-cache
+        - --hicache-ratio=2
+        - --hicache-mem-layout=page_first_direct
+        - --hicache-io-backend=direct
+        # ============================================================
+        # L3存储后端配置
+        # ============================================================
+        - --hicache-storage-backend=mooncake
+        - --hicache-write-policy=write_through
+        - --hicache-storage-prefetch-policy=timeout
+
+      ports:
+        - containerPort: 30000
+
+      resources:
+        limits:
+          nvidia.com/gpu: 2
+          memory: 64Gi
+
+---
+# ============================================================
+# SGLang + HF3FS后端配置（DeepSeek-R1）
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sglang-hicache-hf3fs
+spec:
+  containers:
+    - name: sglang
+      image: lmsysorg/sglang:latest
+      command:
+        - python
+        - -m
+        - sglang.launch_server
+        - --model-path=/models/DeepSeek-R1/
+        - --tp=8
+        - --mem-fraction-static=0.85
+        - --enable-hierarchical-cache
+        - --hicache-ratio=2
+        - --page-size=64
+        - --hicache-mem-layout=page_first_direct
+        - --hicache-io-backend=direct
+        # ============================================================
+        # HF3FS存储后端
+        # ============================================================
+        - --hicache-storage-backend=hf3fs
+        - --hicache-storage-prefetch-policy=wait_complete
+        - --hicache-write-policy=write_through
+
+      ports:
+        - containerPort: 30000
+
+      resources:
+        limits:
+          nvidia.com/gpu: 8
+          memory: 256Gi
+
+      volumeMounts:
+        - name: hf3fs-mount
+          mountPath: /data/kvcache
+        - name: model-path
+          mountPath: /models
+
+  volumes:
+    - name: hf3fs-mount
+      # HF3FS挂载点
+      persistentVolumeClaim:
+        claimName: hf3fs-pvc
+    - name: model-path
+      persistentVolumeClaim:
+        claimName: model-cache-pvc
+
+---
+# ============================================================
+# SGLang服务暴露
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: sglang-hicache-service
+spec:
+  selector:
+    app: sglang-hicache
+  ports:
+    - port: 30000
+      targetPort: 30000
+      name: sglang-api
+  type: ClusterIP

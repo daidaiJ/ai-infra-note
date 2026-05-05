@@ -1,0 +1,183 @@
+# ============================================================
+# DRA 示例 3: Pod 使用 ResourceClaim
+# ============================================================
+#
+# Pod 通过 spec.resourceClaims 引用 ResourceClaim
+# 容器通过 resources.claims 使用分配的设备
+
+---
+# ============================================================
+# 方式 1: 直接引用已存在的 ResourceClaim
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: training-pod-direct
+spec:
+  # ============================================================
+  # 引用 ResourceClaim（必须已存在）
+  # ============================================================
+  resourceClaims:
+    - name: gpu-claim              # Pod 内的引用名称
+      source:
+        claim:
+          name: gpu-claim-training  # 已存在的 ResourceClaim 名称
+
+  containers:
+    - name: trainer
+      image: pytorch/pytorch:latest
+      command: ["python", "train.py"]
+      
+      # ============================================================
+      # 容器使用 ResourceClaim
+      # ============================================================
+      resources:
+        claims:
+          - name: gpu-claim  # 引用 spec.resourceClaims[].name
+
+---
+# ============================================================
+# 方式 2: 使用 ResourceClaimTemplate（推荐）
+# ============================================================
+# Template 在 Pod 创建时自动创建 ResourceClaim
+# Pod 删除时自动清理，适合 Deployment 等场景
+apiVersion: v1
+kind: Pod
+metadata:
+  name: inference-pod-template
+spec:
+  resourceClaims:
+    - name: gpu-claim
+      source:
+        # ============================================================
+        # 使用模板：Pod 创建时自动生成 ResourceClaim
+        # ============================================================
+        template:
+          spec:
+            deviceClassName: gpu-class-a100
+            devices:
+              requests:
+                - name: gpu-0
+                  allocationMode: ExactCount
+                  count: 1
+
+  containers:
+    - name: inference
+      image: tensorflow/serving:latest
+      resources:
+        claims:
+          - name: gpu-claim
+
+---
+# ============================================================
+# 方式 3: Deployment 使用 ResourceClaimTemplate
+# ============================================================
+# 每个 Pod副本 会获得独立的 ResourceClaim
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-deployment
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: inference
+  template:
+    metadata:
+      labels:
+        app: inference
+    spec:
+      resourceClaims:
+        - name: gpu-claim
+          source:
+            template:
+              spec:
+                deviceClassName: gpu-class-a100
+                devices:
+                  requests:
+                    - name: gpu-0
+                      allocationMode: ExactCount
+                      count: 1
+      containers:
+        - name: inference
+          image: tensorflow/serving:latest
+          resources:
+            claims:
+              - name: gpu-claim
+
+---
+# ============================================================
+# 方式 4: StatefulSet 使用预创建 ResourceClaim
+# ============================================================
+# 每个 Pod 使用固定名称的 ResourceClaim，适合有状态应用
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: training-statefulset
+spec:
+  replicas: 2
+  serviceName: training
+  selector:
+    matchLabels:
+      app: training
+  template:
+    metadata:
+      labels:
+        app: training
+    spec:
+      resourceClaims:
+        - name: gpu-claim
+          source:
+            claim:
+              # 使用 Pod 序号命名（需预先创建）
+              # claimNameTemplate: "gpu-claim-${POD_NAME}"
+              name: gpu-claim-template-placeholder  # 实际需配合控制器
+      containers:
+        - name: trainer
+          image: pytorch/pytorch:latest
+          resources:
+            claims:
+              - name: gpu-claim
+
+---
+# ============================================================
+# 方式 5: 多设备场景
+# ============================================================
+# GPU + RDMA NIC 组合使用
+apiVersion: v1
+kind: Pod
+metadata:
+  name: distributed-training-pod
+spec:
+  resourceClaims:
+    # GPU 设备
+    - name: gpu-claim
+      source:
+        template:
+          spec:
+            deviceClassName: gpu-class-a100
+            devices:
+              requests:
+                - name: gpu-0
+                  allocationMode: ExactCount
+                  count: 1
+
+    # RDMA NIC 设备
+    - name: rdma-claim
+      source:
+        template:
+          spec:
+            deviceClassName: rdma-class-mlx5
+            devices:
+              requests:
+                - name: rdma-0
+                  allocationMode: ExactCount
+                  count: 1
+
+  containers:
+    - name: distributed-trainer
+      image: pytorch/pytorch:latest
+      resources:
+        claims:
+          - name: gpu-claim
+          - name: rdma-claim

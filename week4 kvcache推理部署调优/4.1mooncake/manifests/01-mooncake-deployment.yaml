@@ -1,0 +1,190 @@
+# ============================================================
+# Mooncake Transfer Engine 部署配置
+# ============================================================
+#
+# 【说明】
+# Mooncake Transfer Engine 通常作为vLLM的内置依赖运行，
+# 不需要单独部署。此配置展示如何在K8s中部署完整PD分离架构。
+#
+# 【核心组件】
+# - Prefill节点: kv_producer角色
+# - Decode节点: kv_consumer角色
+# - Proxy代理: 请求路由服务
+#
+# ============================================================
+
+---
+# ============================================================
+# Prefill节点部署
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-prefill
+  labels:
+    app: vllm-prefill
+    role: kv-producer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-prefill
+  template:
+    metadata:
+      labels:
+        app: vllm-prefill
+        role: kv-producer
+    spec:
+      # ============================================================
+      # NUMA亲和配置（关键优化）
+      # ============================================================
+      # 建议使用kubelet CPU管理策略实现NUMA绑定
+      # 或在容器启动命令中使用numactl
+
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # NUMA绑定（关键配置）
+              numactl --cpunodebind=0 --membind=0 \
+                vllm serve Qwen/Qwen2.5-7B-Instruct \
+                --port 8010 \
+                --gpu-memory-utilization 0.85 \
+                --enable-prefix-caching \
+                --kv-transfer-config '{"kv_connector":"MooncakeConnector","kv_role":"kv_producer","kv_connector_extra_config":{"num_workers":10,"mooncake_protocol":"rdma"}}'
+
+          env:
+            # ============================================================
+            # Mooncake环境变量
+            # ============================================================
+            - name: VLLM_MOONCAKE_BOOTSTRAP_PORT
+              value: "8998"  # Bootstrap服务器端口
+            - name: VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT
+              value: "480"   # KV缓存超时时间（秒）
+
+          ports:
+            - containerPort: 8010
+              name: vllm-api
+            - containerPort: 8998
+              name: bootstrap
+
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              memory: 32Gi
+            requests:
+              nvidia.com/gpu: 1
+              memory: 32Gi
+
+          volumeMounts:
+            # RDMA设备注入
+            - name: rdma-devices
+              mountPath: /dev/infiniband
+            # 模型存储
+            - name: model-cache
+              mountPath: /models
+
+      volumes:
+        - name: rdma-devices
+          hostPath:
+            path: /dev/infiniband
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc
+
+---
+# ============================================================
+# Decode节点部署
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-decode
+  labels:
+    app: vllm-decode
+    role: kv-consumer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-decode
+  template:
+    metadata:
+      labels:
+        app: vllm-decode
+        role: kv-consumer
+    spec:
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # NUMA绑定（关键配置）
+              numactl --cpunodebind=0 --membind=0 \
+                vllm serve Qwen/Qwen2.5-7B-Instruct \
+                --port 8020 \
+                --gpu-memory-utilization 0.85 \
+                --kv-transfer-config '{"kv_connector":"MooncakeConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"mooncake_protocol":"rdma"}}'
+
+          ports:
+            - containerPort: 8020
+              name: vllm-api
+
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              memory: 32Gi
+            requests:
+              nvidia.com/gpu: 1
+              memory: 32Gi
+
+          volumeMounts:
+            - name: rdma-devices
+              mountPath: /dev/infiniband
+            - name: model-cache
+              mountPath: /models
+
+      volumes:
+        - name: rdma-devices
+          hostPath:
+            path: /dev/infiniband
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc
+
+---
+# ============================================================
+# 服务暴露
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-prefill-service
+spec:
+  selector:
+    app: vllm-prefill
+  ports:
+    - port: 8010
+      targetPort: 8010
+      name: vllm-api
+    - port: 8998
+      targetPort: 8998
+      name: bootstrap
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-decode-service
+spec:
+  selector:
+    app: vllm-decode
+  ports:
+    - port: 8020
+      targetPort: 8020
+      name: vllm-api

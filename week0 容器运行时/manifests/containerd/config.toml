@@ -1,0 +1,131 @@
+# ============================================================
+# containerd 配置示例
+# ============================================================
+#
+# 【核心配置】
+# - version: 配置格式版本（必须为 2）
+# - grpc: gRPC 服务配置
+# - plugins.cri: CRI 插件配置
+#
+# 【使用方式】
+# 1. 复制到 /etc/containerd/config.toml
+# 2. systemctl restart containerd
+#
+# ============================================================
+
+version = 2
+
+# ============================================================
+# 根配置
+# ============================================================
+
+# 启用调试模式（生产环境应关闭）
+debug = false
+
+# ============================================================
+# gRPC 服务配置
+# ============================================================
+[grpc]
+  address = "/run/containerd/containerd.sock"
+  tcp_address = ""
+  uid = 0
+  gid = 0
+  max_recv_message_size = 16777216
+  max_send_message_size = 16777216
+
+# ============================================================
+# 运行时配置
+# ============================================================
+[runtimes]
+  # runc 配置（默认）
+  [runtimes.runc]
+    runtime_type = "io.containerd.runc.v2"
+    options = {
+      # 使用 systemd cgroup 驱动（K8s 1.26+ 必须）
+      SystemdCgroup = true
+    }
+
+  # NVIDIA 运行时（GPU 支持）
+  [runtimes.nvidia]
+    runtime_type = "io.containerd.runc.v2"
+    options = {
+      SystemdCgroup = true
+      BinaryName = "nvidia-container-runtime"
+    }
+
+# ============================================================
+# CRI 插件配置
+# ============================================================
+[plugins."io.containerd.grpc.v1.cri"]
+  # 禁用 AppArmor（可选）
+  disable_apparmor = false
+
+  # ============================================================
+  # Pod 沙箱配置
+  # ============================================================
+  [plugins."io.containerd.grpc.v1.cri".sandbox]
+    # Pod 沙箱镜像
+    sandbox_image = "registry.k8s.io/pause:3.9"
+
+  # ============================================================
+  # 容器配置
+  # ============================================================
+  [plugins."io.containerd.grpc.v1.cri".container]
+    # 默认运行时
+    default_runtime_name = "runc"
+
+    # ============================================================
+    # 运行时配置
+    # ============================================================
+    [plugins."io.containerd.grpc.v1.cri".container.runtimes]
+      # runc（默认）
+      [plugins."io.containerd.grpc.v1.cri".container.runtimes.runc]
+        runtime_type = "io.containerd.runc.v2"
+        options = {
+          SystemdCgroup = true
+        }
+
+      # NVIDIA 运行时（GPU）
+      [plugins."io.containerd.grpc.v1.cri".container.runtimes.nvidia]
+        runtime_type = "io.containerd.runc.v2"
+        options = {
+          SystemdCgroup = true
+          BinaryName = "nvidia-container-runtime"
+        }
+
+      # NVIDIA CDI 运行时
+      [plugins."io.containerd.grpc.v1.cri".container.runtimes.nvidia-cdi]
+        runtime_type = "io.containerd.runc.v2"
+        options = {
+          SystemdCgroup = true
+          BinaryName = "nvidia-container-runtime"
+        }
+
+  # ============================================================
+  # 镜像配置
+  # ============================================================
+  [plugins."io.containerd.grpc.v1.cri".image]
+    # 镜像拉取并发数
+    max_concurrent_downloads = 10
+
+    # 镜像拉取超时
+    pull_timeout = "5m"
+
+    # 镜像仓库认证（示例）
+    [plugins."io.containerd.grpc.v1.cri".image.auths]
+      # docker.io = {
+      #   auth = "base64-encoded-auth"
+      # }
+
+# ============================================================
+# 存储配置
+# ============================================================
+[plugins."io.containerd.snapshotter.v1.overlayfs"]
+  root_path = "/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs"
+
+# ============================================================
+# Metrics 配置（监控）
+# ============================================================
+[metrics]
+  address = ""
+  grpc_histogram = false

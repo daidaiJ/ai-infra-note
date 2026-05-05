@@ -1,0 +1,178 @@
+# ============================================================
+# ClusterQueue: 集群级队列（配额管理）
+# ============================================================
+#
+# 【核心字段】
+# - namespaceSelector: 限定哪些命名空间可使用此队列
+# - resourceGroups: 资源配额组定义
+# - nominalQuota: 固定配额（团队保底资源）
+# - borrowingLimit: 借用上限（从Cohort借用）
+# - cohort: 队列组（资源共享池）
+# - preemption: 抢占策略配置
+#
+# 【使用方式】
+# 1. 创建ResourceFlavor定义资源类型
+# 2. 创建ClusterQueue定义配额
+# 3. 创建LocalQueue关联ClusterQueue
+# 4. 用户提交Workload到LocalQueue
+
+---
+# ============================================================
+# 示例1: 核心团队GPU队列（高优先级、可抢占）
+# ============================================================
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: core-team-queue
+spec:
+  # ============================================================
+  # 命名空间选择：只有team=core标签的命名空间可用
+  # ============================================================
+  namespaceSelector:
+    matchLabels:
+      team: core
+
+  # ============================================================
+  # Cohort: 加入共享池，可借用其他队列资源
+  # ============================================================
+  cohort: gpu-shared-cohort
+
+  # ============================================================
+  # 资源配额组
+  # ============================================================
+  resourceGroups:
+    - coveredResources: ["nvidia.com/gpu", "cpu", "memory"]
+      flavors:
+        - name: gpu-flavor
+          resources:
+            - name: "nvidia.com/gpu"
+              nominalQuota: 30      # 固定配额：30张GPU
+              borrowingLimit: 10    # 可借用最多10张
+
+            - name: "cpu"
+              nominalQuota: "60"    # 60核CPU
+
+            - name: "memory"
+              nominalQuota: "120Gi" # 120GB内存
+
+  # ============================================================
+  # 抢占策略：高优先级可抢占其他队列
+  # ============================================================
+  preemption:
+    # 队列内抢占：只抢占低优先级
+    withinClusterQueue:
+      policy: LowerPriority
+
+    # Cohort内抢占：可抢占任意队列
+    reclaimWithinCohort: Any
+
+    # 借用时抢占：只抢占低优先级
+    borrowWithinCohort:
+      policy: LowerPriority
+
+---
+# ============================================================
+# 示例2: 研究团队GPU队列（中等优先级）
+# ============================================================
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: research-team-queue
+spec:
+  namespaceSelector:
+    matchLabels:
+      team: research
+
+  cohort: gpu-shared-cohort
+
+  resourceGroups:
+    - coveredResources: ["nvidia.com/gpu"]
+      flavors:
+        - name: gpu-flavor
+          resources:
+            - name: "nvidia.com/gpu"
+              nominalQuota: 50      # 固定配额：50张GPU
+              borrowingLimit: 20    # 可借用最多20张
+
+  preemption:
+    withinClusterQueue:
+      policy: LowerPriority
+
+    # 只能抢占低优先级队列
+    reclaimWithinCohort: LowerPriority
+
+---
+# ============================================================
+# 示例3: 临时任务队列（低优先级、可被抢占）
+# ============================================================
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: temp-team-queue
+spec:
+  namespaceSelector:
+    matchLabels:
+      team: temp
+
+  cohort: gpu-shared-cohort
+
+  resourceGroups:
+    - coveredResources: ["nvidia.com/gpu"]
+      flavors:
+        - name: gpu-flavor
+          resources:
+            - name: "nvidia.com/gpu"
+              nominalQuota: 20      # 固定配额：20张GPU
+              borrowingLimit: 0     # 不可借用
+
+  preemption:
+    withinClusterQueue:
+      policy: LowerPriority
+
+    # 不可抢占其他队列
+    reclaimWithinCohort: Never
+
+---
+# ============================================================
+# 示例4: ResourceFlavor定义（GPU类型区分）
+# ============================================================
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: gpu-flavor
+spec:
+  # ============================================================
+  # 节点标签匹配：选择GPU节点
+  # ============================================================
+  nodeLabels:
+    gpu-type: a100-80gb
+
+  # ============================================================
+  # 容忍度：允许调度到有污点的GPU节点
+  # ============================================================
+  tolerations:
+    - key: "gpu-type"
+      operator: "Equal"
+      value: "a100-80gb"
+      effect: "NoSchedule"
+
+---
+# ============================================================
+# 示例5: 多GPU类型ResourceFlavor
+# ============================================================
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: v100-flavor
+spec:
+  nodeLabels:
+    gpu-type: v100-32gb
+
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: a100-flavor
+spec:
+  nodeLabels:
+    gpu-type: a100-80gb

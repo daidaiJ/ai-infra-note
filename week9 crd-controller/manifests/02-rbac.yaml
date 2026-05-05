@@ -1,0 +1,98 @@
+# ============================================================
+# RBAC: ServiceAccount + ClusterRole + ClusterRoleBinding
+# ============================================================
+#
+# 【核心字段】
+# - rules: 权限规则列表
+# - subjects: 绑定对象（ServiceAccount）
+#
+# 【最小权限原则】
+# 只授予必要的资源和操作权限
+#
+# 【使用方式】
+# kubectl apply -f 02-rbac.yaml
+
+# ============================================================
+# ServiceAccount: 控制器身份
+# ============================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sample-controller-sa
+  namespace: default
+  labels:
+    app: sample-controller
+
+---
+# ============================================================
+# ClusterRole: 定义权限规则
+# ============================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sample-controller-role
+  labels:
+    app: sample-controller
+rules:
+  # ============================================================
+  # 规则1: 管理 SampleResource 资源
+  # ============================================================
+  # 需要 get/list/watch 用于读取 CR
+  # 需要 update/patch 用于更新 Status
+  - apiGroups: ["sample.ai-infra"]
+    resources: ["sampleresources"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  
+  # ============================================================
+  # 规则2: 允许更新 status 子资源
+  # ============================================================
+  - apiGroups: ["sample.ai-infra"]
+    resources: ["sampleresources/status"]
+    verbs: ["get", "update", "patch"]
+  
+  # ============================================================
+  # 规则3: 管理 Deployment 资源
+  # ============================================================
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  
+  # ============================================================
+  # 规则4: 管理 Service 资源
+  # ============================================================
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  
+  # ============================================================
+  # 规则5: 事件上报
+  # ============================================================
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  
+  # ============================================================
+  # 规则6: Leader Election 租约管理
+  # ============================================================
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update"]
+
+---
+# ============================================================
+# ClusterRoleBinding: 绑定 ServiceAccount
+# ============================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sample-controller-rolebinding
+  labels:
+    app: sample-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sample-controller-role
+subjects:
+  - kind: ServiceAccount
+    name: sample-controller-sa
+    namespace: default

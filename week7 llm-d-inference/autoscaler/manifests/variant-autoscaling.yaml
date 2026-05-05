@@ -1,0 +1,80 @@
+# ============================================================
+# VariantAutoscaling CR 示例
+# ============================================================
+
+apiVersion: llmd.ai/v1alpha1
+kind: VariantAutoscaling
+metadata:
+  name: llama-8b-autoscaler
+  namespace: llm-inference
+spec:
+  # ============================================================
+  # 扩缩目标
+  # ============================================================
+  scaleTargetRef:
+    kind: Deployment
+    name: llama-8b
+    
+  # ============================================================
+  # 模型标识
+  # ============================================================
+  modelID: "meta/llama-3.1-8b"
+  
+  # ============================================================
+  # 成本因子（可选）
+  # ============================================================
+  variantCost: "15.5"             # 用于成本优化
+
+---
+# ============================================================
+# 饱和度配置 ConfigMap
+# ============================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wva-saturation-scaling-config
+  namespace: workload-variant-autoscaler-system
+data:
+  # 默认配置
+  default: |
+    kvCacheThreshold: 0.80        # KV 利用率饱和阈值
+    queueLengthThreshold: 5       # 队列深度饱和阈值
+    kvSpareTrigger: 0.10          # KV spare 容量触发扩容
+    queueSpareTrigger: 3          # Queue spare 容量触发扩容
+    
+  # 模型级覆盖
+  "meta/llama-3.1-8b#llm-inference": |
+    kvCacheThreshold: 0.85
+    queueLengthThreshold: 3
+    kvSpareTrigger: 0.15
+    queueSpareTrigger: 5
+
+---
+# ============================================================
+# HPA 配置示例
+# ============================================================
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: llama-8b-hpa
+  namespace: llm-inference
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: llama-8b
+  minReplicas: 1
+  maxReplicas: 16
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: wva_desired_replicas
+          selector:
+            matchLabels:
+              model_id: meta/llama-3.1-8b
+        target:
+          type: Value
+          value: "1"

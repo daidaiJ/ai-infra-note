@@ -1,0 +1,181 @@
+# ============================================================
+# Workload: 工作负载提交示例
+# ============================================================
+#
+# 【核心字段】
+# - queueName: 关联的LocalQueue名称
+# - podSets: Pod集合定义
+# - priorityClassName: 优先级
+#
+# 【使用方式】
+# 1. 创建Workload指定LocalQueue
+# 2. Kueue自动管理调度和配额分配
+# 3. 监控Workload状态变化
+#
+# 【注意】
+# - Workload是Kueue管理的抽象，实际Pod由Kueue创建
+
+---
+# ============================================================
+# 示例1: 高优先级训练任务
+# ============================================================
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: Workload
+metadata:
+  name: training-job-high
+  namespace: core-team
+spec:
+  # ============================================================
+  # 关联LocalQueue
+  # ============================================================
+  queueName: core-queue
+
+  # ============================================================
+  # 优先级设置
+  # ============================================================
+  priorityClassName: high-priority
+
+  # ============================================================
+  # Pod集合定义
+  # ============================================================
+  podSets:
+    - name: worker
+      count: 4               # 4个Worker Pod
+      template:
+        spec:
+          containers:
+            - name: pytorch
+              image: pytorch/pytorch:latest
+              resources:
+                requests:
+                  cpu: "4"
+                  memory: "16Gi"
+                  nvidia.com/gpu: "2"    # 每个Pod请求2张GPU
+                limits:
+                  nvidia.com/gpu: "2"
+          # ============================================================
+          # Kueue会自动添加调度约束
+          # ============================================================
+
+---
+# ============================================================
+# 示例2: 中优先级研究任务
+# ============================================================
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: Workload
+metadata:
+  name: research-job-1
+  namespace: research-team
+spec:
+  queueName: research-queue
+  priorityClassName: medium-priority
+
+  podSets:
+    - name: worker
+      count: 8
+      template:
+        spec:
+          containers:
+            - name: tensorflow
+              image: tensorflow/tensorflow:latest-gpu
+              resources:
+                requests:
+                  nvidia.com/gpu: "1"
+
+---
+# ============================================================
+# 示例3: 低优先级临时任务
+# ============================================================
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: Workload
+metadata:
+  name: temp-job-1
+  namespace: temp-team
+spec:
+  queueName: temp-queue
+  priorityClassName: low-priority
+
+  podSets:
+    - name: worker
+      count: 2
+      template:
+        spec:
+          containers:
+            - name: job
+              image: busybox
+              command: ["sleep", "3600"]
+              resources:
+                requests:
+                  nvidia.com/gpu: "1"
+
+---
+# ============================================================
+# 示例4: 使用Job自动创建Workload
+# ============================================================
+# Kueue支持通过Job自动创建Workload
+# 只需在Job中添加annotation即可
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: auto-training-job
+  namespace: core-team
+  annotations:
+    # ============================================================
+    # Kueue自动管理此Job
+    # ============================================================
+    kueue.x-k8s.io/queue-name: core-queue
+spec:
+  parallelism: 4
+  completions: 4
+  template:
+    spec:
+      containers:
+        - name: training
+          image: pytorch/pytorch:latest
+          resources:
+            limits:
+              nvidia.com/gpu: 2
+      restartPolicy: OnFailure
+
+---
+# ============================================================
+# 示例5: 多PodSet任务（Master + Worker）
+# ============================================================
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: Workload
+metadata:
+  name: distributed-training
+  namespace: core-team
+spec:
+  queueName: core-queue
+  priorityClassName: high-priority
+
+  podSets:
+    # ============================================================
+    # Master节点
+    # ============================================================
+    - name: master
+      count: 1
+      template:
+        spec:
+          containers:
+            - name: master
+              image: pytorch/pytorch:latest
+              resources:
+                requests:
+                  nvidia.com/gpu: "1"
+
+    # ============================================================
+    # Worker节点
+    # ============================================================
+    - name: worker
+      count: 4
+      template:
+        spec:
+          containers:
+            - name: worker
+              image: pytorch/pytorch:latest
+              resources:
+                requests:
+                  nvidia.com/gpu: "2"

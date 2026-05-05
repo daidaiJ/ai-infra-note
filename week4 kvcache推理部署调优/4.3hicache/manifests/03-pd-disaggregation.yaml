@@ -1,0 +1,141 @@
+# ============================================================
+# HiCache PD分离配置
+# ============================================================
+#
+# 【PD分离模式】
+# HiCache支持两种PD分离优化配置：
+# 1. Prefill-only HiCache: 仅Prefill节点启用HiCache
+# 2. Full HiCache + 异步卸载: Prefill + Decode异步卸载
+#
+# ============================================================
+
+---
+# ============================================================
+# Prefill节点配置（Prefill-only HiCache）
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sglang-prefill-hicache
+  labels:
+    role: prefill
+spec:
+  containers:
+    - name: sglang
+      image: lmsysorg/sglang:latest
+      command:
+        - python
+        - -m
+        - sglang.launch_server
+        - --model-path=Qwen/Qwen3-8B
+        - --tp=4
+        - --enable-hierarchical-cache
+        - --hicache-ratio=2
+        - --hicache-storage-backend=hf3fs
+        - --hicache-storage-prefetch-policy=wait_complete
+        # ============================================================
+        # PD分离模式配置
+        # ============================================================
+        - --disaggregation-mode=prefill
+
+      ports:
+        - containerPort: 30000
+
+      resources:
+        limits:
+          nvidia.com/gpu: 4
+          memory: 128Gi
+
+---
+# ============================================================
+# Decode节点配置（异步卸载KVCache）
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sglang-decode-hicache
+  labels:
+    role: decode
+spec:
+  containers:
+    - name: sglang
+      image: lmsysorg/sglang:latest
+      command:
+        - python
+        - -m
+        - sglang.launch_server
+        - --model-path=Qwen/Qwen3-8B
+        - --tp=4
+        - --hicache-mem-layout=page_first_direct
+        - --hicache-io-backend=direct
+        - --hicache-storage-backend=hf3fs
+        # ============================================================
+        # PD分离模式配置
+        # ============================================================
+        - --disaggregation-mode=decode
+        # ============================================================
+        # Decode节点异步卸载KVCache（关键配置）
+        # ============================================================
+        - --disaggregation-decode-enable-offload-kvcache=true
+
+      ports:
+        - containerPort: 30000
+
+      resources:
+        limits:
+          nvidia.com/gpu: 4
+          memory: 128Gi
+
+---
+# ============================================================
+# 异构TP配置示例
+# ============================================================
+# 不同TP大小的集群共享KVCache
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sglang-hicache-tp4
+  labels:
+    tp-size: "4"
+spec:
+  containers:
+    - name: sglang
+      image: lmsysorg/sglang:latest
+      command:
+        - python
+        - -m
+        - sglang.launch_server
+        - --model-path=Qwen/Qwen3-8B
+        - --tp=4
+        - --enable-hierarchical-cache
+        - --hicache-storage-backend=mooncake
+        # ============================================================
+        # 异构TP配置：设置所有TP大小的最小公倍数
+        # 示例：集群有TP=4和TP=8，LCM=8
+        # ============================================================
+        - --hicache-storage-backend-extra-config={"tp_lcm_size":8}
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sglang-hicache-tp8
+  labels:
+    tp-size: "8"
+spec:
+  containers:
+    - name: sglang
+      image: lmsysorg/sglang:latest
+      command:
+        - python
+        - -m
+        - sglang.launch_server
+        - --model-path=Qwen/Qwen3-8B
+        - --tp=8
+        - --enable-hierarchical-cache
+        - --hicache-storage-backend=mooncake
+        # ============================================================
+        # 同样的tp_lcm_size配置，保证跨集群KV复用
+        # ============================================================
+        - --hicache-storage-backend-extra-config={"tp_lcm_size":8}

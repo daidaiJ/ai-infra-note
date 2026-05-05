@@ -1,0 +1,169 @@
+# ============================================================
+# DRA 示例 4: DRA Driver 部署概念示例
+# ============================================================
+#
+# DRA Driver 是核心组件，负责：
+# 1. 设备发现和上报（NodeSlice）
+# 2. 资源分配（Allocate）
+# 3. 设备准备（Prepare）
+# 4. 设备清理（Unprepare）
+#
+# Driver 通过 gRPC 与 kubelet 通信
+
+---
+# ============================================================
+# Driver DaemonSet（示意）
+# ============================================================
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gpu-dra-driver
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: gpu-dra-driver
+  template:
+    spec:
+      containers:
+        - name: driver
+          image: nvidia/gpu-dra-driver:v1.0.0
+
+          # ============================================================
+          # DRA Driver 的职责
+          # ============================================================
+          # 1. 发现节点上的 GPU 设备
+          # 2. 通过 kubelet gRPC 上报设备列表（NodeSlice）
+          # 3. 接收分配请求，返回分配结果
+          # 4. 准备设备（挂载驱动、设置环境变量等）
+          #
+          # 相比 Device Plugin 的 Allocate 接口，
+          # DRA Driver 的 Prepare 接口能做更多事情
+
+          # 挂载必要目录
+          volumeMounts:
+            - name: kubelet-plugins
+              mountPath: /var/lib/kubelet/plugins
+            - name: dev
+              mountPath: /dev
+
+      volumes:
+        - name: kubelet-plugins
+          hostPath:
+            path: /var/lib/kubelet/plugins
+        - name: dev
+          hostPath:
+            path: /dev
+
+---
+# ============================================================
+# NodeSlice 示例（Driver 生成的节点设备信息）
+# ============================================================
+# Driver 通过 gRPC 向 kubelet 上报此信息
+# kubelet 将其发布到 API Server，供调度器使用
+#
+# 【核心内容】
+# - 节点上可用的设备列表
+# - 设备属性（用于约束匹配）
+# - 设备拓扑信息（NUMA、PCI 等）
+#
+apiVersion: resource.k8s.io/v1beta1
+kind: ResourceSlice
+metadata:
+  name: node-gpu-01-gpu-driver.nvidia.com
+spec:
+  # Driver 名称
+  driver: gpu-driver.nvidia.com
+  
+  # 节点名称
+  nodeName: node-gpu-01
+
+  # ============================================================
+  # 设备池：节点上的可用设备
+  # ============================================================
+  pool:
+    name: gpu-driver.nvidia.com
+    generation: 1
+    resourceSliceCount: 1
+
+    # ============================================================
+  # 可用设备列表
+  # ============================================================
+  devices:
+    - name: gpu-0
+      attributes:
+        # 基础属性
+        model: "NVIDIA-A100-SXM4-80GB"
+        uuid: "GPU-abc123-0001"
+        memory: 81920  # MiB
+        
+        # 驱动信息
+        driverVersion: "535.129.03"
+        cudaVersion: "12.2"
+        
+        # 拓扑信息
+        numaNode: 0
+        pciPath: "/sys/bus/pci/devices/0000:08:00.0"
+        
+        # 健康状态
+        healthy: true
+        
+        # 性能特征
+        nvlink: true
+        multicast: true
+
+    - name: gpu-1
+      attributes:
+        model: "NVIDIA-A100-SXM4-80GB"
+        uuid: "GPU-abc123-0002"
+        memory: 81920
+        driverVersion: "535.129.03"
+        cudaVersion: "12.2"
+        numaNode: 1
+        pciPath: "/sys/bus/pci/devices/0000:09:00.0"
+        healthy: true
+        nvlink: true
+
+---
+# ============================================================
+# ResourceClaim 状态示例（分配后）
+# ============================================================
+# Driver 分配后，ResourceClaim 状态更新
+apiVersion: resource.k8s.io/v1beta1
+kind: ResourceClaim
+metadata:
+  name: gpu-claim-training
+status:
+  # ============================================================
+  # 分配状态
+  # ============================================================
+  allocation:
+    driver: gpu-driver.nvidia.com
+    
+    # 分配结果：具体分配的设备
+    devices:
+      results:
+        - request: gpu-0
+          pool: gpu-driver.nvidia.com
+          device: gpu-0  # 分配的设备 ID
+          
+        - request: gpu-0
+          pool: gpu-driver.nvidia.com
+          device: gpu-1
+    
+    # ============================================================
+    # 分配配置（传递给 Prepare）
+    # ============================================================
+    # Driver 返回的配置信息，用于后续 Prepare 阶段
+    allocationResult:
+      nodeSelectorTerms:
+        - matchFields:
+            - key: nodeName
+              operator: In
+              values: ["node-gpu-01"]
+
+  # 分配时间
+  allocationTimestamp: "2024-01-15T10:30:00Z"
+
+  # 当前阶段
+  phase: Allocated  # Pending → Allocated → Reserved

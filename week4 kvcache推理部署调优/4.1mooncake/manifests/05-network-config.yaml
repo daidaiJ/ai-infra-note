@@ -1,0 +1,142 @@
+# ============================================================
+# Mooncake RDMA网络配置
+# ============================================================
+#
+# 【前置要求】
+# - RDMA设备已安装并配置
+# - IB子网管理器(opensm)已运行
+# - NetworkAttachmentDefinition已创建
+#
+# 【关键配置】
+# - RDMA设备注入Pod
+# - NUMA亲和性绑定
+# - 网络带宽验证
+#
+# ============================================================
+
+---
+# ============================================================
+# NetworkAttachmentDefinition - RDMA网络附加
+# ============================================================
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: rdma-network
+  namespace: default
+spec:
+  config: |
+    {
+      "type": "host-device",
+      "device": "mlx5_0",
+      "name": "rdma-net"
+    }
+
+---
+# ============================================================
+# RDMA设备资源ConfigMap（用于验证脚本）
+# ============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rdma-verify-scripts
+data:
+  verify-rdma.sh: |
+    #!/bin/bash
+    # ============================================================
+    # RDMA设备验证脚本
+    # ============================================================
+
+    echo "=== RDMA设备检查 ==="
+
+    # 列出RDMA设备
+    echo "1. RDMA设备列表:"
+    ibv_devices
+
+    # 检查设备状态
+    echo ""
+    echo "2. RDMA设备状态:"
+    ibv_devinfo | grep -E "device|port_state|mtu"
+
+    # 检查IB端口
+    echo ""
+    echo "3. IB端口状态:"
+    ibstat
+
+    # 检查NUMA位置
+    echo ""
+    echo "4. 网卡NUMA位置:"
+    for iface in /sys/class/net/*; do
+      if [ -f "$iface/device/numa_node" ]; then
+        name=$(basename $iface)
+        numa=$(cat $iface/device/numa_node)
+        echo "  $iface: NUMA=$numa"
+      fi
+    done
+
+    echo ""
+    echo "=== 验证完成 ==="
+
+  benchmark-rdma.sh: |
+    #!/bin/bash
+    # ============================================================
+    # RDMA性能测试脚本
+    # ============================================================
+
+    DEVICE=${1:-mlx5_0}
+    REMOTE_IP=${2:-""}
+
+    echo "=== RDMA性能测试 ==="
+    echo "设备: $DEVICE"
+    echo "远端IP: $REMOTE_IP"
+
+    if [ -z "$REMOTE_IP" ]; then
+      echo "用法: $0 <device> <remote_ip>"
+      echo "示例: $0 mlx5_0 192.168.0.2"
+      exit 1
+    fi
+
+    echo ""
+    echo "=== 带宽测试 ==="
+    echo "在远端执行: ib_write_bw -d $DEVICE -a --size=1048576"
+    echo "本地执行:"
+    ib_write_bw -d $DEVICE -a $REMOTE_IP --size=1048576
+
+    echo ""
+    echo "=== 延迟测试 ==="
+    echo "在远端执行: ib_write_lat -d $DEVICE -a"
+    echo "本地执行:"
+    ib_write_lat -d $DEVICE -a $REMOTE_IP
+
+    echo ""
+    echo "=== 测试完成 ==="
+
+---
+# ============================================================
+# RDMA验证Pod（一次性运行）
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rdma-verify
+spec:
+  restartPolicy: Never
+  containers:
+    - name: verify
+      image: mellanox/mofed:latest
+      command:
+        - /bin/bash
+        - /scripts/verify-rdma.sh
+      volumeMounts:
+        - name: rdma-scripts
+          mountPath: /scripts
+        - name: rdma-devices
+          mountPath: /dev/infiniband
+
+  volumes:
+    - name: rdma-scripts
+      configMap:
+        name: rdma-verify-scripts
+        defaultMode: 0755
+    - name: rdma-devices
+      hostPath:
+        path: /dev/infiniband

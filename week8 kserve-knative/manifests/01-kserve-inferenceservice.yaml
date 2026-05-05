@@ -1,0 +1,88 @@
+# ============================================================
+# KServe InferenceService: 基础模型部署示例
+# ============================================================
+#
+# 【核心字段】
+# - apiVersion: serving.kserve.io/v1beta1 - KServe API 版本
+# - kind: InferenceService - 模型服务 CRD 类型
+# - spec.predictor: 定义推理模型配置
+# - spec.predictor.pytorch: 使用 PyTorch 处理器
+# - spec.predictor.pytorch.storageUri: 模型存储路径
+#
+# 【使用方式】
+# kubectl apply -f 01-kserve-inferenceservice.yaml
+# kubectl get inferenceservice basic-model
+#
+
+# ============================================================
+# 示例 1: PyTorch 模型部署
+# ============================================================
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: basic-pytorch-model
+  annotations:
+    # Knative 自动缩放配置
+    autoscaling.knative.dev/target: "10"
+    autoscaling.knative.dev/min-scale: "0"
+    autoscaling.knative.dev/max-scale: "5"
+spec:
+  predictor:
+    pytorch:
+      storageUri: gs://kfserving-examples/models/torchscript/resnet
+      resources:
+        requests:
+          cpu: "500m"
+          memory: 1Gi
+        limits:
+          cpu: "2"
+          memory: 4Gi
+          nvidia.com/gpu: "1"
+
+---
+# ============================================================
+# 示例 2: TensorFlow 模型部署
+# ============================================================
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: basic-tf-model
+  annotations:
+    autoscaling.knative.dev/target: "10"
+    autoscaling.knative.dev/min-scale: "1"     # 保持至少 1 个副本
+    autoscaling.knative.dev/max-scale: "5"
+spec:
+  predictor:
+    tensorflow:
+      storageUri: gs://kfserving-examples/models/tensorflow/2-1/half_plus_two
+      resources:
+        requests:
+          cpu: "500m"
+          memory: 1Gi
+        limits:
+          cpu: "2"
+          memory: 4Gi
+
+---
+# ============================================================
+# 示例 3: ONNX 模型部署
+# ============================================================
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: basic-onnx-model
+  annotations:
+    autoscaling.knative.dev/target: "20"
+    autoscaling.knative.dev/min-scale: "0"
+    autoscaling.knative.dev/max-scale: "10"
+spec:
+  predictor:
+    onnx:
+      storageUri: gs://kfserving-examples/models/onnx/mnist
+      resources:
+        requests:
+          cpu: "250m"
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 2Gi

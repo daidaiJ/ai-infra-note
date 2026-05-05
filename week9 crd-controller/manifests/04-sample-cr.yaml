@@ -1,0 +1,73 @@
+# ============================================================
+# SampleResource: CR 使用示例
+# ============================================================
+#
+# 【核心字段】
+# - spec.replicas: 期望副本数
+# - spec.feature: 启用的特性
+# - spec.image: 容器镜像
+# - spec.port: 服务端口
+#
+# 【使用方式】
+# kubectl apply -f 04-sample-cr.yaml
+# kubectl get sampleresource
+# kubectl describe sampleresource my-sample
+
+apiVersion: sample.ai-infra/v1alpha1
+kind: SampleResource
+metadata:
+  name: my-sample
+  namespace: default
+  labels:
+    app.kubernetes.io/name: sample-resource
+    app.kubernetes.io/instance: my-sample
+    ai-infra/type: example
+  annotations:
+    sample.ai-infra/description: "SampleResource 示例"
+    sample.ai-infra/created-by: "admin@example.com"
+spec:
+  # ============================================================
+  # 必需字段
+  # ============================================================
+  replicas: 3                    # 期望 3 个副本
+  feature: "advanced-scheduling" # 启用高级调度
+  
+  # ============================================================
+  # 可选字段（有默认值）
+  # ============================================================
+  image: "nginx:1.25"           # 使用 nginx 镜像
+  port: 80                       # 暴露 80 端口
+
+---
+# ============================================================
+# 示例2: 最小化配置（使用默认值）
+# ============================================================
+apiVersion: sample.ai-infra/v1alpha1
+kind: SampleResource
+metadata:
+  name: minimal-sample
+  namespace: default
+spec:
+  replicas: 1
+  feature: "basic"
+  
+  # image 和 port 使用默认值
+  # image: "nginx:latest" (默认)
+  # port: 80 (默认)
+
+---
+# ============================================================
+# 示例3: 高副本数
+# ============================================================
+apiVersion: sample.ai-infra/v1alpha1
+kind: SampleResource
+metadata:
+  name: high-scale-sample
+  namespace: default
+  labels:
+    ai-infra/priority: high
+spec:
+  replicas: 10
+  feature: "advanced-scheduling"
+  image: "nginx:1.25"
+  port: 8080

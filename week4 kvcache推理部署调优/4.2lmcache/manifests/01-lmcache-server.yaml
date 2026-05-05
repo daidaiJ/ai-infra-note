@@ -1,0 +1,157 @@
+# ============================================================
+# LMCache Server 部署配置（MP模式）
+# ============================================================
+#
+# 【核心功能】
+# - 独立运行的KVCache存储服务
+# - 支持多vLLM/SGLang实例共享
+# - 提供监控端点
+#
+# 【部署模式】
+# MP模式：生产环境推荐，支持跨实例共享
+#
+# ============================================================
+
+---
+# ============================================================
+# LMCache Server部署
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lmcache-server
+  labels:
+    app: lmcache-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lmcache-server
+  template:
+    metadata:
+      labels:
+        app: lmcache-server
+    spec:
+      containers:
+        - name: lmcache
+          image: lmcache/lmcache:latest
+          command:
+            - lmcache
+            - server
+            # ============================================================
+            # LMCache Server核心参数
+            # ============================================================
+            - --l1-size-gb=20       # L1缓存大小（GB）
+            - --eviction-policy=LRU # 驱逐策略
+            - --chunk-size=256      # 分块大小（生产推荐）
+            - --port=8000           # 监控端口
+
+          ports:
+            - containerPort: 8000
+              name: lmcache-api
+
+          env:
+            # ============================================================
+            # LMCache环境变量（可选）
+            # ============================================================
+            - name: LMCACHE_CONFIG_FILE
+              value: /config/lmc_config.yaml
+
+          resources:
+            limits:
+              cpu: "4"
+              memory: 64Gi  # 根据缓存大小配置
+            requests:
+              cpu: "2"
+              memory: 32Gi
+
+          volumeMounts:
+            - name: lmcache-config
+              mountPath: /config
+            - name: cache-storage
+              mountPath: /data/cache  # 本地存储路径
+
+      volumes:
+        - name: lmcache-config
+          configMap:
+            name: lmcache-config
+        - name: cache-storage
+          persistentVolumeClaim:
+            claimName: lmcache-storage-pvc
+
+---
+# ============================================================
+# LMCache配置ConfigMap
+# ============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lmcache-config
+data:
+  lmc_config.yaml: |
+    # ============================================================
+    # LMCache配置文件
+    # ============================================================
+
+    # 分块大小（生产环境推荐256）
+    chunk_size: 256
+
+    # 本地CPU存储
+    local_cpu: true
+    max_local_cpu_size: 20  # GB
+
+    # 分层传输
+    use_layerwise: true
+
+    # 驱逐策略
+    eviction_policy: LRU
+
+    # ============================================================
+    # 存储后端配置（可选）
+    # ============================================================
+    # Redis后端示例
+    # storage_backend: redis
+    # redis_host: redis-server
+    # redis_port: 6379
+
+    # Mooncake后端示例
+    # storage_backend: mooncake
+    # mooncake_protocol: rdma
+
+    # S3后端示例
+    # storage_backend: s3
+    # s3_endpoint: https://s3.amazonaws.com
+    # s3_bucket: kvcache-storage
+
+---
+# ============================================================
+# LMCache服务暴露
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: lmcache-server-service
+spec:
+  selector:
+    app: lmcache-server
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: lmcache-api
+  type: ClusterIP
+
+---
+# ============================================================
+# 存储PVC（可选）
+# ============================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lmcache-storage-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi  # 根据需求调整
+  storageClassName: standard

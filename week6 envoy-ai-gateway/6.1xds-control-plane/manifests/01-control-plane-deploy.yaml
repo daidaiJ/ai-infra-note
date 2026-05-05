@@ -1,0 +1,87 @@
+# ============================================================
+# Deployment: xDS 控制面服务
+# ============================================================
+#
+# 【核心字段】
+# - image: 控制面 Server 镜像
+# - port: 18000 (xDS gRPC 端口)
+# - replicas: 1 (单实例，可水平扩展)
+#
+# 【使用方式】
+# kubectl apply -f 01-control-plane-deploy.yaml
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xds-control-plane
+  namespace: ai-gateway
+  labels:
+    app: xds-control-plane
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xds-control-plane
+  template:
+    metadata:
+      labels:
+        app: xds-control-plane
+    spec:
+      containers:
+        - name: control-plane
+          image: envoy-xds-control-plane:latest
+          ports:
+            - name: xds
+              containerPort: 18000
+              protocol: TCP
+          
+          # ============================================================
+          # 环境变量：配置 Kubernetes API 连接
+          # ============================================================
+          env:
+            - name: KUBERNETES_SERVICE_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: KUBERNETES_SERVICE_PORT
+              value: "6443"
+          
+          # 健康检查
+          readinessProbe:
+            tcpSocket:
+              port: 18000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 18000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+---
+# ============================================================
+# Service: xDS 控制面服务暴露
+# ============================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: xds-control-plane
+  namespace: ai-gateway
+spec:
+  selector:
+    app: xds-control-plane
+  ports:
+    - name: xds
+      port: 18000
+      targetPort: 18000
+      protocol: TCP
+  type: ClusterIP

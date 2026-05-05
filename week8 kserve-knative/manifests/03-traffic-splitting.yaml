@@ -1,0 +1,189 @@
+# ============================================================
+# Traffic Splitting: 流量分割示例
+# ============================================================
+#
+# 【核心字段】
+# - spec.traffic[].revisionName: 目标 Revision 名称
+# - spec.traffic[].percent: 流量百分比 (0-100)
+# - spec.traffic[].tag: 流量标签 (用于区分版本)
+# - spec.traffic[].latestRevision: 是否指向最新 Revision
+#
+# 【使用方式】
+# 用于灰度发布、A/B 测试、蓝绿部署等场景
+# kubectl apply -f 03-traffic-splitting.yaml
+# kubectl get ksvc <service-name> -o yaml
+#
+
+# ============================================================
+# 示例 1: 蓝绿部署 (100% 切换到新版本)
+# ============================================================
+# 场景: 新版本已验证,完全切换流量
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: blue-green-service
+spec:
+  template:
+    metadata:
+      name: blue-green-service-v2      # 新版本 Revision
+    spec:
+      containers:
+      - name: model
+        image: my-model:v2
+        ports:
+        - containerPort: 8080
+          name: h2c
+  
+  # 100% 流量到新版本
+  traffic:
+  - revisionName: blue-green-service-v2
+    percent: 100
+    tag: green                        # 新版本标签
+  - revisionName: blue-green-service-v1
+    percent: 0
+    tag: blue                         # 旧版本标签 (保留以备回滚)
+
+---
+# ============================================================
+# 示例 2: Canary 发布 (渐进式流量切换)
+# ============================================================
+# 场景: 分阶段验证新版本,逐步增加流量
+
+# === 阶段 1: 1% 流量测试 ===
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: canary-service
+spec:
+  template:
+    metadata:
+      name: canary-service-v2
+    spec:
+      containers:
+      - name: model
+        image: my-model:v2
+        ports:
+        - containerPort: 8080
+          name: h2c
+  
+  traffic:
+  - revisionName: canary-service-v2
+    percent: 1                          # 1% 流量测试
+    tag: canary
+  - latestRevision: true
+    percent: 99                         # 99% 流量稳定版
+    tag: stable
+
+---
+# === 阶段 2: 10% 流量验证 (指标正常后) ===
+# 修改上述 YAML 的 percent: 10/90
+# kubectl patch ksvc canary-service --type='merge' -p '{"spec":{"traffic":[{"revisionName":"canary-service-v2","percent":10},{"latestRevision":true,"percent":90}]}}'
+
+---
+# === 阶段 3: 50% 流量对比 (A/B 测试) ===
+# 修改 percent: 50/50
+
+---
+# === 阶段 4: 100% 全量发布 ===
+# 修改 percent: 100/0
+
+---
+# ============================================================
+# 示例 3: A/B 测试配置 (50/50 流量分割)
+# ============================================================
+# 场景: 同时运行两个版本,对比业务效果
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: ab-test-service
+spec:
+  template:
+    metadata:
+      name: ab-test-service-v2         # 实验组版本
+    spec:
+      containers:
+      - name: model
+        image: my-model:v2
+        ports:
+        - containerPort: 8080
+          name: h2c
+  
+  # 50/50 流量分割
+  traffic:
+  - revisionName: ab-test-service-v1
+    percent: 50
+    tag: control                      # 控制组 (A)
+  - revisionName: ab-test-service-v2
+    percent: 50
+    tag: experiment                   # 实验组 (B)
+
+---
+# ============================================================
+# 示例 4: 多版本并行 (多臂老虎机策略)
+# ============================================================
+# 场景: 同时测试多个版本,根据表现动态调整
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: multi-version-service
+spec:
+  template:
+    metadata:
+      name: multi-version-service-v3
+    spec:
+      containers:
+      - name: model
+        image: my-model:v3
+        ports:
+        - containerPort: 8080
+          name: h2c
+  
+  # 多版本流量分配
+  traffic:
+  - revisionName: multi-version-service-v1
+    percent: 60
+    tag: stable                       # 稳定版
+  - revisionName: multi-version-service-v2
+    percent: 25
+    tag: candidate-1                  # 候选版 1
+  - revisionName: multi-version-service-v3
+    percent: 15
+    tag: candidate-2                  # 候选版 2
+
+---
+# ============================================================
+# 示例 5: 基于 Header 的流量路由 (内部测试)
+# ============================================================
+# 场景: 特定用户/内部人员访问新版本
+# 注意: 需要配合 Istio Gateway 实现
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: header-based-service
+  annotations:
+    # 启用基于 Header 的路由
+    serving.knative.dev/visibility: "cluster-local"
+spec:
+  template:
+    metadata:
+      name: header-based-service-v2
+    spec:
+      containers:
+      - name: model
+        image: my-model:v2
+        ports:
+        - containerPort: 8080
+          name: h2c
+  
+  traffic:
+  - revisionName: header-based-service-v2
+    percent: 0                        # 默认不暴露
+    tag: test                         # 通过 /test 路径访问
+  - latestRevision: true
+    percent: 100
+
+# ============================================================
+# 访问方式:
+# - 默认流量: http://<gateway>/
+# - 测试版本: http://<gateway>/test  或 添加 Header: Knative-Serving-Tag: test
+# ============================================================

@@ -1,0 +1,150 @@
+# ============================================================
+# 多节点推理服务部署
+# ============================================================
+#
+# 【核心配置】
+# - replicas: 多副本部署（3节点）
+# - RDMA网络附加
+# - 拓扑感知调度
+#
+# 【使用方式】
+# kubectl apply -f 02-inference-service.yaml
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-service
+  namespace: ai-workloads
+  labels:
+    app: inference
+    network: rdma
+spec:
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: inference
+
+  # ============================================================
+  # 拓扑感知部署策略
+  # ============================================================
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+
+  template:
+    metadata:
+      labels:
+        app: inference
+        network: rdma
+      annotations:
+        # ============================================================
+        # RDMA网络附加（引用NAD）
+        # ============================================================
+        k8s.v1.cni.cncf.io/networks: rdma-network
+        # 多网络格式: rdma-network, backup-network
+
+    spec:
+      # ============================================================
+      # 拓扑感知调度约束
+      # ============================================================
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone    # 机架/区域拓扑
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: inference
+
+      # ============================================================
+      # 节点选择器（指定RDMA节点）
+      # ============================================================
+      nodeSelector:
+        has-rdma: "true"
+
+      # ============================================================
+      # Pod亲和性（可选：与其他推理Pod同机架）
+      # ============================================================
+      affinity:
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: inference
+                topologyKey: topology.kubernetes.io/zone
+
+      containers:
+        - name: inference
+          image: inference-server:v1
+          imagePullPolicy: IfNotPresent
+
+          # ============================================================
+          # 资源配置
+          # ============================================================
+          resources:
+            limits:
+              nvidia.com/gpu: 2
+              rdma/ib: 1        # ← RDMA网卡资源
+              cpu: "8"
+              memory: "32Gi"
+            requests:
+              cpu: "8"
+              memory: "32Gi"
+
+          # ============================================================
+          # 环境变量配置
+          # ============================================================
+          env:
+            - name: MODEL_NAME
+              value: "llama-70b"
+            - name: SERVICE_PORT
+              value: "8080"
+            - name: RDMA_ENABLED
+              value: "true"
+
+          # ============================================================
+          # 端口配置
+          # ============================================================
+          ports:
+            - containerPort: 8080
+              name: inference-port
+
+          # ============================================================
+          # 健康检查
+          # ============================================================
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+---
+# ============================================================
+# 推理服务Service配置
+# ============================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference-service
+  namespace: ai-workloads
+spec:
+  type: ClusterIP
+  selector:
+    app: inference
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: inference-port

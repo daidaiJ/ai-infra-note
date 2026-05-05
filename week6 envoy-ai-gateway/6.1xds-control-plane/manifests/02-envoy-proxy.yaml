@@ -1,0 +1,133 @@
+# ============================================================
+# DaemonSet: Envoy Proxy Sidecar (AI 网关)
+# ============================================================
+#
+# 【核心字段】
+# - image: Envoy Proxy 镜像
+# - port: 8080 (HTTP 网关端口)
+# - args: 指定 bootstrap 配置文件
+#
+# 【使用方式】
+# kubectl apply -f 02-envoy-proxy.yaml
+# 或作为 Sidecar 注入到模型服务 Pod 中
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: envoy-proxy
+  namespace: ai-gateway
+  labels:
+    app: envoy-proxy
+spec:
+  selector:
+    matchLabels:
+      app: envoy-proxy
+  template:
+    metadata:
+      labels:
+        app: envoy-proxy
+      annotations:
+        # ============================================================
+        # 注解：Envoy 配置标识
+        # ============================================================
+        # 用于 xDS Server 识别此 Envoy 实例
+        envoy.node-id: "ai-gateway-${NODE_NAME}"
+    spec:
+      containers:
+        - name: envoy
+          image: envoyproxy/envoy:v1.29-latest
+          args:
+            - "--config-path"
+            - "/etc/envoy/envoy-bootstrap.yaml"
+            - "--log-level"
+            - "info"
+          
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: admin
+              containerPort: 9901
+              protocol: TCP
+          
+          # ============================================================
+          # 挂载 Bootstrap 配置
+          # ============================================================
+          volumeMounts:
+            - name: bootstrap-config
+              mountPath: /etc/envoy
+              readOnly: True
+          
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          
+          # 健康检查
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 9901  # Envoy Admin 端口
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /server_info
+              port: 9901
+            initialDelaySeconds: 30
+            periodSeconds: 15
+      
+      volumes:
+        - name: bootstrap-config
+          configMap:
+            name: envoy-bootstrap-config
+
+---
+# ============================================================
+# ConfigMap: Envoy Bootstrap 配置
+# ============================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoy-bootstrap-config
+  namespace: ai-gateway
+data:
+  envoy-bootstrap.yaml: |
+    # 参见 config/envoy-bootstrap.yaml
+    node:
+      id: ai-gateway-node-1
+      cluster: ai-gateway-cluster
+    
+    dynamic_resources:
+      lds_config:
+        ads: {}
+      cds_config:
+        ads: {}
+      ads_config:
+        type: GRPC
+        grpc_services:
+          - target_uri: xds-control-plane.ai-gateway.svc.cluster.local:18000
+
+---
+# ============================================================
+# Service: Envoy Proxy 服务暴露
+# ============================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: envoy-proxy
+  namespace: ai-gateway
+spec:
+  selector:
+    app: envoy-proxy
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+  type: LoadBalancer

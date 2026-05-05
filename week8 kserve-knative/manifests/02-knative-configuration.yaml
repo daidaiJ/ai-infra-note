@@ -1,0 +1,159 @@
+# ============================================================
+# Knative Service Configuration: Knative 服务配置示例
+# ============================================================
+#
+# 【核心字段】
+# - apiVersion: serving.knative.dev/v1 - Knative Serving API 版本
+# - kind: Service - Knative 服务定义
+# - spec.template: 定义期望的 Pod 状态
+# - spec.traffic: 流量路由配置
+# - metadata.annotations: 自动缩放等配置
+#
+# 【使用方式】
+# 通常由 KServe 自动生成,也可手动创建
+# kubectl apply -f 02-knative-configuration.yaml
+# kubectl get ksvc <service-name>
+#
+
+# ============================================================
+# 示例 1: 基础 Knative Service 配置
+# ============================================================
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: ai-inference-service
+  namespace: default
+spec:
+  template:
+    metadata:
+      name: ai-inference-service-v1
+      annotations:
+        # === 自动缩放配置 ===
+        # 目标并发数: 每个 Pod 处理 10 个并发请求
+        autoscaling.knative.dev/target: "10"
+        
+        # 最小副本数: 允许缩容到 0
+        autoscaling.knative.dev/min-scale: "0"
+        
+        # 最大副本数: 限制最多 20 个 Pod
+        autoscaling.knative.dev/max-scale: "20"
+        
+        # 缩放窗口: 60 秒稳定期
+        autoscaling.knative.dev/window: "60s"
+        
+        # 缩放算法: KPA (基于并发)
+        autoscaling.knative.dev/class: "kpa.autoscaling.knative.dev"
+        
+        # 扩容速率: 每秒最多新增 5 个 Pod
+        autoscaling.knative.dev/scale-up-rate: "5"
+        
+        # 缩容速率: 每秒最多减少 2 个 Pod
+        autoscaling.knative.dev/scale-down-rate: "2"
+        
+        # 初始副本数: 首次部署时创建 1 个副本
+        autoscaling.knative.dev/initial-scale: "1"
+    spec:
+      # 硬限制: Pod 最多接受 10 个并发请求 (超过会被 Queue-Proxy 拒绝)
+      containerConcurrency: 10
+      
+      # 容器配置
+      containers:
+      - name: model
+        image: pytorch/torchserve:latest
+        args:
+        - "--model-store=/mnt/models"
+        - "--models=resnet=resnet50.mar"
+        ports:
+        - containerPort: 8080
+          name: h2c           # HTTP/2 协议 (Knative 要求)
+        
+        resources:
+          requests:
+            cpu: "500m"
+            memory: 1Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+            nvidia.com/gpu: "1"
+        
+        # 环境变量
+        env:
+        - name: TS_SERVICE_ENVELOPE
+          value: "true"
+        
+        # 启动探针
+        startupProbe:
+          httpGet:
+            path: /ping
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 6
+        
+        # 就绪探针
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 8080
+          periodSeconds: 10
+          failureThreshold: 3
+
+---
+# ============================================================
+# 示例 2: 高可用配置 (不允许缩容到零)
+# ============================================================
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: ai-inference-ha
+  namespace: default
+spec:
+  template:
+    metadata:
+      annotations:
+        # 生产环境: 保持至少 2 个副本
+        autoscaling.knative.dev/min-scale: "2"
+        autoscaling.knative.dev/max-scale: "50"
+        autoscaling.knative.dev/target: "20"
+    spec:
+      containerConcurrency: 20
+      containers:
+      - name: model
+        image: pytorch/torchserve:latest
+        ports:
+        - containerPort: 8080
+          name: h2c
+        resources:
+          requests:
+            cpu: "1"
+            memory: 2Gi
+          limits:
+            cpu: "4"
+            memory: 8Gi
+            nvidia.com/gpu: "1"
+
+---
+# ============================================================
+# 示例 3: 基于 RPS 的自动缩放
+# ============================================================
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: ai-inference-rps
+  namespace: default
+spec:
+  template:
+    metadata:
+      annotations:
+        # 使用 RPS (每秒请求数) 作为缩放依据
+        autoscaling.knative.dev/target: "100"        # 目标 RPS
+        autoscaling.knative.dev/class: "hpa.autoscaling.knative.dev"  # 使用 HPA
+        autoscaling.knative.dev/min-scale: "1"
+        autoscaling.knative.dev/max-scale: "30"
+    spec:
+      containers:
+      - name: model
+        image: pytorch/torchserve:latest
+        ports:
+        - containerPort: 8080
+          name: h2c

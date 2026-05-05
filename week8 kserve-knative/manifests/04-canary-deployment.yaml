@@ -1,0 +1,287 @@
+# ============================================================
+# Canary Deployment: Canary 灰度发布完整示例
+# ============================================================
+#
+# 【核心字段】
+# - InferenceService: 模型服务定义
+# - Knative Service traffic: 流量路由配置
+# - revisionName: 指定 Revision 版本
+# - percent: 流量百分比分配
+#
+# 【使用方式】
+# 演示完整的 Canary 发布流程: 1% → 10% → 50% → 100%
+# kubectl apply -f 04-canary-deployment.yaml
+#
+
+# ============================================================
+# 阶段 0: 部署初始稳定版本 (v1)
+# ============================================================
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: canary-llm-model
+  annotations:
+    autoscaling.knative.dev/target: "10"
+    autoscaling.knative.dev/min-scale: "1"
+    autoscaling.knative.dev/max-scale: "10"
+spec:
+  predictor:
+    pytorch:
+      storageUri: gs://models/llm-v1
+      resources:
+        requests:
+          cpu: "2"
+          memory: 4Gi
+          nvidia.com/gpu: "1"
+        limits:
+          cpu: "4"
+          memory: 8Gi
+          nvidia.com/gpu: "1"
+
+---
+# ============================================================
+# 阶段 1: 部署新版本并分配 1% 流量 (冒烟测试)
+# ============================================================
+# 说明: 创建新 Revision,仅 1% 流量用于验证基本功能
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: canary-llm-model-predictor-default
+spec:
+  template:
+    metadata:
+      name: canary-llm-model-predictor-v2    # 新版本 Revision
+    spec:
+      containers:
+      - name: kserve-container
+        image: kserve/torchserve:latest
+        env:
+        - name: STORAGE_URI
+          value: "gs://models/llm-v2"        # 新版本模型
+        resources:
+          requests:
+            cpu: "2"
+            memory: 4Gi
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "4"
+            memory: 8Gi
+            nvidia.com/gpu: "1"
+        ports:
+        - containerPort: 8080
+          name: h2c
+  
+  # 1% 流量到新版本 (冒烟测试)
+  traffic:
+  - revisionName: canary-llm-model-predictor-v2
+    percent: 1
+    tag: canary
+  - latestRevision: false
+    percent: 99
+    tag: stable
+
+# ============================================================
+# 验证命令 (阶段 1):
+# ============================================================
+# # 查看 Revision 列表
+# kubectl get revisions -l serving.kserve.io/inferenceservice=canary-llm-model
+#
+# # 查看流量分布
+# kubectl get ksvc canary-llm-model-predictor-default -o jsonpath='{.status.traffic}'
+#
+# # 测试新版本 (通过标签直接访问)
+# curl -H "Host: canary-canary-llm-model-predictor-default.default.example.com" \
+#      http://<gateway-ip>/v1/models/canary-llm-model:predict \
+#      -d '{"instances": [[...]]}'
+#
+
+---
+# ============================================================
+# 阶段 2: 增加到 10% 流量 (小范围验证)
+# ============================================================
+# 说明: 指标正常后,增加到 10% 流量观察
+# 触发条件: 延迟 P99 < 500ms, 错误率 < 0.1%
+
+# 执行流量切换 (使用 patch 命令)
+# kubectl patch ksvc canary-llm-model-predictor-default --type='merge' -p '
+# {
+#   "spec": {
+#     "traffic": [
+#       {
+#         "revisionName": "canary-llm-model-predictor-v2",
+#         "percent": 10,
+#         "tag": "canary"
+#       },
+#       {
+#         "latestRevision": false,
+#         "percent": 90,
+#         "tag": "stable"
+#       }
+#     ]
+#   }
+# }'
+
+# ============================================================
+# 监控指标 (阶段 2):
+# ============================================================
+# | 指标       | 阈值      | 说明                   |
+# |------------|----------|------------------------|
+# | 延迟 P99   | < 500ms  | 确保新版本性能         |
+# | 错误率     | < 0.1%   | 确保推理正确性         |
+# | GPU 利用率 | < 85%    | 确保资源充足           |
+# | 吞吐量     | > v1 90% | 确保处理能力           |
+
+---
+# ============================================================
+# 阶段 3: 增加到 50% 流量 (A/B 对比)
+# ============================================================
+# 说明: 指标持续正常后,增加到 50% 进行充分对比
+# 触发条件: 10% 流量运行 30 分钟无异常
+
+# 执行流量切换
+# kubectl patch ksvc canary-llm-model-predictor-default --type='merge' -p '
+# {
+#   "spec": {
+#     "traffic": [
+#       {
+#         "revisionName": "canary-llm-model-predictor-v2",
+#         "percent": 50,
+#         "tag": "canary"
+#       },
+#       {
+#         "latestRevision": false,
+#         "percent": 50,
+#         "tag": "stable"
+#       }
+#     ]
+#   }
+# }'
+
+# ============================================================
+# 对比分析 (阶段 3):
+# ============================================================
+# | 维度       | v1 (稳定版)  | v2 (新版)      |
+# |------------|-------------|---------------|
+# | 准确率     | 92.3%       | 94.1%         |
+# | 延迟 P50   | 45ms        | 68ms          |
+# | 延迟 P99   | 120ms       | 185ms         |
+# | GPU 内存   | 2.1 GB      | 3.4 GB        |
+# | 吞吐量     | 220 req/s   | 147 req/s     |
+
+---
+# ============================================================
+# 阶段 4: 100% 流量切换 (全量发布)
+# ============================================================
+# 说明: 新版本充分验证后,完全切换流量
+# 触发条件: 50% 流量运行 1 小时,业务指标达标
+
+# 执行全量切换
+# kubectl patch ksvc canary-llm-model-predictor-default --type='merge' -p '
+# {
+#   "spec": {
+#     "traffic": [
+#       {
+#         "revisionName": "canary-llm-model-predictor-v2",
+#         "percent": 100,
+#         "tag": "stable"
+#       },
+#       {
+#         "revisionName": "canary-llm-model-predictor-v1",
+#         "percent": 0,
+#         "tag": "previous"
+#       }
+#     ]
+#   }
+# }'
+
+# ============================================================
+# 清理旧版本 (可选):
+# ============================================================
+# # 删除旧 Revision 释放资源
+# kubectl delete revision canary-llm-model-predictor-v1
+
+---
+# ============================================================
+# 回滚方案: 快速回退到稳定版本
+# ============================================================
+# 说明: 任何阶段发现异常,立即回滚
+# 触发条件: 错误率 > 1%, 延迟 P99 > 1000ms
+
+# 快速回滚命令:
+# kubectl patch ksvc canary-llm-model-predictor-default --type='merge' -p '
+# {
+#   "spec": {
+#     "traffic": [
+#       {
+#         "revisionName": "canary-llm-model-predictor-v1",
+#         "percent": 100,
+#         "tag": "stable"
+#       },
+#       {
+#         "revisionName": "canary-llm-model-predictor-v2",
+#         "percent": 0,
+#         "tag": "failed"
+#       }
+#     ]
+#   }
+# }'
+
+# ============================================================
+# Canary 发布检查清单
+# ============================================================
+# | 阶段 | 流量比例 | 验证时长 | 关键指标              | 通过标准           |
+# |------|---------|---------|-----------------------|-------------------|
+# | 1    | 1%      | 10 分钟  | 基本功能              | 无 5xx 错误       |
+# | 2    | 10%     | 30 分钟  | 延迟/错误率           | P99 < 500ms       |
+# | 3    | 50%     | 1 小时   | 业务指标对比          | 准确率提升         |
+# | 4    | 100%    | 2 小时   | 全面监控              | 所有指标正常       |
+
+---
+# ============================================================
+# 自动化脚本示例: 渐进式流量切换
+# ============================================================
+# 以下是一个简化的 Bash 脚本示例,可逐步增加流量
+#
+# #!/bin/bash
+# # canary-rollout.sh
+# SERVICE="canary-llm-model-predictor-default"
+# NEW_REV="canary-llm-model-predictor-v2"
+#
+# stages=(1 10 25 50 100)
+# for percent in "${stages[@]}"; do
+#   echo "切换到 ${percent}% 流量..."
+#   
+#   kubectl patch ksvc $SERVICE --type='merge' -p "
+#   {
+#     \"spec\": {
+#       \"traffic\": [
+#         {\"revisionName\": \"$NEW_REV\", \"percent\": $percent},
+#         {\"latestRevision\": false, \"percent\": $((100-percent))}
+#       ]
+#     }
+#   }"
+#   
+#   echo "等待 5 分钟观察指标..."
+#   sleep 300
+#   
+#   # 检查错误率 (示例: 从 Prometheus 查询)
+#   ERROR_RATE=$(curl -s http://prometheus:9090/api/v1/query?query=rate(http_requests_total{code=~"5.."}[5m]))
+#   
+#   if (( $(echo "$ERROR_RATE > 0.01" | bc -l) )); then
+#     echo "错误率过高,回滚!"
+#     kubectl patch ksvc $SERVICE --type='merge' -p "
+#     {
+#       \"spec\": {
+#         \"traffic\": [
+#           {\"revisionName\": \"$NEW_REV\", \"percent\": 0},
+#           {\"latestRevision\": false, \"percent\": 100}
+#         ]
+#       }
+#     }"
+#     exit 1
+#   fi
+#   
+#   echo "指标正常,继续..."
+# done
+#
+# echo "Canary 发布完成!"

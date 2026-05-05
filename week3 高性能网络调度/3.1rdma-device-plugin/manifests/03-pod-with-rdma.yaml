@@ -1,0 +1,64 @@
+# ============================================================
+# Pod使用RDMA设备示例
+# ============================================================
+#
+# 【核心配置】
+# - resources.limits.rdma/ib: 请求RDMA设备
+# - annotation引用NAD（需单独创建）
+#
+# 【结果】
+# Device Plugin自动注入设备文件和环境变量:
+# - /dev/infiniband/mlx5_0
+# - RDMA_DEVICE=mlx5_0
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: inference-server
+  annotations:
+    # ============================================================
+    # 引用NetworkAttachmentDefinition（需预先创建）
+    # ============================================================
+    k8s.v1.cni.cncf.io/networks: rdma-network
+
+spec:
+  containers:
+    - name: inference
+      image: inference:v1
+
+      # ============================================================
+      # 资源请求
+      # ============================================================
+      resources:
+        limits:
+          nvidia.com/gpu: 2     # GPU资源
+          rdma/ib: 1            # RDMA设备资源
+
+      # ============================================================
+      # NCCL环境变量（分布式训练）
+      # ============================================================
+      env:
+        - name: NCCL_DEBUG
+          value: INFO
+        - name: NCCL_IB_DISABLE
+          value: "0"            # 启用RDMA
+        - name: NCCL_IB_HCA
+          value: mlx5_0         # 使用设备名（由环境变量RDMA_DEVICE注入）
+
+---
+# ============================================================
+# 多RDMA设备Pod示例
+# ============================================================
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: multi-rdma-pod
+spec:
+  containers:
+    - name: worker
+      image: pytorch:v1
+      resources:
+        limits:
+          nvidia.com/gpu: 4
+          rdma/ib: 2            # 请求2个RDMA设备

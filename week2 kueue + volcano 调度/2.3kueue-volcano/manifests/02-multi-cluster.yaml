@@ -1,0 +1,155 @@
+# ============================================================
+# 多集群调度配置示例（扩展场景）
+# ============================================================
+#
+# 【场景】
+# 多集群GPU资源池，统一调度管理
+#
+# 【架构】
+# - Kueue多集群支持（认知了解）
+# - Volcano单集群批调度
+# - 跨集群资源借用
+
+---
+# ============================================================
+# 集群A配置
+# ============================================================
+
+# 命名空间
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: multi-cluster-ns
+  labels:
+    cluster: cluster-a
+    purpose: training
+
+---
+# ClusterQueue（集群A）
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: cluster-a-queue
+spec:
+  namespaceSelector:
+    matchLabels:
+      cluster: cluster-a
+
+  cohort: multi-cluster-cohort    # 跨集群共享池
+
+  resourceGroups:
+    - flavors:
+        - name: cluster-a-flavor
+          resources:
+            - name: "nvidia.com/gpu"
+              nominalQuota: 100
+              borrowingLimit: 50    # 可从其他集群借用
+
+---
+# LocalQueue
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: cluster-a-local-queue
+  namespace: multi-cluster-ns
+spec:
+  clusterQueue: cluster-a-queue
+
+---
+# Volcano Job（集群A）
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: cross-cluster-training-a
+  namespace: multi-cluster-ns
+  annotations:
+    kueue.x-k8s.io/queue-name: cluster-a-local-queue
+spec:
+  minAvailable: 20
+  tasks:
+    - replicas: 20
+      name: worker
+      template:
+        spec:
+          containers:
+            - name: pytorch
+              resources:
+                limits:
+                  nvidia.com/gpu: "1"
+
+---
+# ============================================================
+# 集群B配置（示意）
+# ============================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: multi-cluster-ns
+  labels:
+    cluster: cluster-b
+    purpose: training
+
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: cluster-b-queue
+spec:
+  namespaceSelector:
+    matchLabels:
+      cluster: cluster-b
+
+  cohort: multi-cluster-cohort    # 同一共享池
+
+  resourceGroups:
+    - flavors:
+        - name: cluster-b-flavor
+          resources:
+            - name: "nvidia.com/gpu"
+              nominalQuota: 80
+              borrowingLimit: 40
+
+---
+# ============================================================
+# ResourceFlavor（集群标识）
+# ============================================================
+
+# 集群A资源类型
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: cluster-a-flavor
+spec:
+  nodeLabels:
+    cluster: cluster-a
+
+---
+# 集群B资源类型
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: cluster-b-flavor
+spec:
+  nodeLabels:
+    cluster: cluster-b
+
+---
+# ============================================================
+# Cohort配置（跨集群共享）
+# ============================================================
+# Cohort自动创建，所有相同cohort名称的ClusterQueue共享资源
+
+# ============================================================
+# 多集群调度流程示意
+# ============================================================
+#
+# 1. 用户提交Job到集群A
+# 2. Kueue检查cluster-a-queue配额
+# 3. 如果配额不足，检查multi-cluster-cohort
+# 4. 可从cluster-b-queue借用配额
+# 5. Volcano执行Gang调度
+#
+# 【注意】
+# 多集群调度需要Kueue多集群支持（高级功能）
+# 此示例仅展示配置思路，实际部署需要额外组件

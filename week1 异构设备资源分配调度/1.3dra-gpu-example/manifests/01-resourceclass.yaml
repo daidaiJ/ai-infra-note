@@ -1,0 +1,89 @@
+# ============================================================
+# DRA 示例 1: ResourceClass - 定义 GPU 资源类
+# ============================================================
+#
+# ResourceClass 定义一类资源的配置和驱动信息
+# 相当于"资源模板"，声明这类资源由哪个 Driver 处理
+#
+# 【核心字段】
+# - driverName: 处理此资源类的驱动名称（必须匹配已注册的 Driver）
+# - parametersRef: 驱动参数配置（可选，传递给 Driver 的 Allocate 方法）
+#
+apiVersion: resource.k8s.io/v1beta1
+kind: ResourceClass
+metadata:
+  name: gpu-class-a100  # 资源类名称
+# ============================================================
+# 驱动名称：必须匹配集群中注册的 DRA Driver
+# Driver 通过 ResourceClass.kubelet.k8s.io API 与 kubelet 通信
+# ============================================================
+driverName: gpu-dra-driver.nvidia.com
+
+# ============================================================
+# 结构化参数：传递给 DRA Driver 的配置
+# Driver 可根据这些参数决定资源分配策略
+# ============================================================
+parametersRef:
+  kind: ConfigMap              # 参数来源类型
+  name: gpu-class-a100-config  # ConfigMap 名称
+  namespace: kube-system       # 必须在驱动命名空间
+
+---
+# ============================================================
+# ResourceClass 参数 ConfigMap
+# ============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-class-a100-config
+  namespace: kube-system
+data:
+  # 驱动解析的参数（JSON 格式，驱动自行解析）
+  parameters.json: |
+    {
+      "gpuModel": "A100-80GB",
+      "allocationStrategy": "balanced",     # 负载均衡分配
+      "minMemory": 40960,                   # 最小显存要求 (MiB)
+      "requiredFeatures": ["cuda12", "nvlink"],
+      "mountOptions": {
+        "driverLibraries": true,
+        "cudaToolkit": true,
+        "cudaBinaries": true
+      },
+      "environmentVariables": {
+        "NVIDIA_VISIBLE_DEVICES": "auto",
+        "CUDA_CACHE_DISABLE": "1"
+      }
+    }
+
+---
+# ============================================================
+# ResourceClass 示例 2: 专用高性能 GPU 类
+# ============================================================
+apiVersion: resource.k8s.io/v1beta1
+kind: ResourceClass
+metadata:
+  name: gpu-class-h100-exclusive
+driverName: gpu-dra-driver.nvidia.com
+parametersRef:
+  kind: ConfigMap
+  name: gpu-class-h100-config
+  namespace: kube-system
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-class-h100-config
+  namespace: kube-system
+data:
+  parameters.json: |
+    {
+      "gpuModel": "H100-80GB",
+      "allocationStrategy": "exclusive",    # 独占分配，不共享
+      "priority": "high",
+      "features": {
+        "nvlink": true,
+        "multicast": true
+      }
+    }

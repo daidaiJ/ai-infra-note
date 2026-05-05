@@ -1,0 +1,55 @@
+# ============================================================
+# EPP 插件配置示例
+# ============================================================
+# 精确前缀缓存感知路由配置
+
+apiVersion: inference.networking.x-k8s.io/v1alpha1
+kind: EndpointPickerConfig
+
+plugins:
+  # ============================================================
+  # Filters - 过滤候选 Pod
+  # ============================================================
+  - type: decode-filter            # 过滤 decode 角色 Pod
+  
+  # ============================================================
+  # Scorers - 评分排序
+  # ============================================================
+  - type: precise-prefix-cache-scorer
+    parameters:
+      tokenProcessorConfig:
+        blockSize: 64              # 必须匹配 vLLM --block-size
+        hashSeed: "42"             # 必须匹配 vLLM PYTHONHASHSEED
+      indexerConfig:
+        kvBlockIndexConfig:
+          enableMetrics: true      # 启用指标
+          maxPrefixBlocksToMatch: 256
+        tokenizersPoolConfig:
+          modelName: "Qwen/Qwen3-32B"  # 必须匹配 vLLM 模型
+      kvEventsConfig:
+        topicFilter: "kv@"         # ZMQ topic 过滤器
+        discoverPods: true         # 多副本 EPP 自动发现
+        
+  - type: load-aware-scorer
+    parameters:
+      threshold: 10               # 队列深度阈值
+      
+  # ============================================================
+  # Pickers - 最终选择
+  # ============================================================
+  - type: max-score-picker
+  
+  # ============================================================
+  # Profile Handler - 策略选择
+  # ============================================================
+  - type: single-profile-handler
+
+schedulingProfiles:
+  - name: default
+    plugins:
+      - pluginRef: decode-filter
+      - pluginRef: precise-prefix-cache-scorer
+        weight: 100               # 高权重
+      - pluginRef: load-aware-scorer
+        weight: 50                # 较低权重
+      - pluginRef: max-score-picker

@@ -1,0 +1,104 @@
+# ============================================================
+# 网络拓扑感知调度器配置
+# ============================================================
+#
+# 【核心配置】
+# - 启用NetworkTopologyFilter和NetworkTopologyScore插件
+# - 设置Score权重为高优先级
+#
+# 【使用方式】
+# kube-scheduler --config scheduler-config.yaml
+
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+
+# ============================================================
+# 调度器Profile配置
+# ============================================================
+profiles:
+  - schedulerName: topology-scheduler
+    plugins:
+      # ============================================================
+      # Filter阶段：拓扑过滤
+      # ============================================================
+      # 过滤不符合NUMA/机架拓扑要求的节点
+      filter:
+        enabled:
+          - name: NetworkTopologyFilter
+
+      # ============================================================
+      # Score阶段：拓扑打分
+      # ============================================================
+      # 根据拓扑距离打分，优先低延迟节点
+      score:
+        enabled:
+          - name: NetworkTopologyScore
+            weight: 10    # 高权重，拓扑优先级高
+
+      # ============================================================
+      # PreFilter阶段：预处理
+      # ============================================================
+      # 可选：预先计算Pod的拓扑需求
+      preFilter:
+        enabled:
+          - name: NetworkTopologyPreFilter
+
+      # ============================================================
+      # Reserve阶段：资源预留
+      # ============================================================
+      # 可选：预留成功后记录拓扑信息
+      reserve:
+        enabled:
+          - name: NetworkTopologyReserve
+
+    # ============================================================
+    # 插件配置参数
+    # ============================================================
+    pluginConfig:
+      - name: NetworkTopologyFilter
+        args:
+          # NUMA亲和性配置
+          numaAffinity:
+            enabled: true
+            strictMode: false    # 宽松模式：允许跨NUMA（分数降低）
+          
+          # 机架感知配置
+          rackAwareness:
+            enabled: true
+            minNodesInRack: 3    # 多节点任务最小同机架节点数
+
+      - name: NetworkTopologyScore
+        args:
+          # 打分权重配置
+          weights:
+            numaScore: 60        # NUMA分数权重60%
+            rackScore: 40        # 机架分数权重40%
+          
+          # 分数映射规则
+          scoreRules:
+            numaSame:      100   # 同NUMA节点满分
+            numaCross:     50    # 跨NUMA节点50分
+            rackSame:      100   # 同机架满分
+            rackAdjacent:  70    # 相邻机架70分
+            rackFar:       50    # 远距离机架50分
+
+---
+# ============================================================
+# 默认调度器Profile（保留标准插件）
+# ============================================================
+profiles:
+  - schedulerName: default-scheduler
+    plugins:
+      # 保留默认插件
+      filter:
+        enabled:
+          - name: NodeUnschedulable
+          - name: NodeName
+          - name: NodePorts
+          - name: NodeResourcesFit
+          - name: NetworkTopologyFilter    # 添加拓扑插件
+      score:
+        enabled:
+          - name: NodeResourcesBalancedAllocation
+          - name: NetworkTopologyScore      # 添加拓扑插件
+            weight: 5                        # 中等权重

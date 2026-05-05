@@ -1,0 +1,85 @@
+# ============================================================
+# RDMA Device Plugin DaemonSet部署
+# ============================================================
+#
+# 【核心字段】
+# - privileged: 需要特权模式访问RDMA设备
+# - volumeMounts: 挂载必要目录（device-plugins、infiniband、sysfs）
+#
+# 【使用方式】
+# kubectl apply -f 02-device-plugin.yaml
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: rdma-device-plugin
+  namespace: kube-system
+  labels:
+    app: rdma-device-plugin
+spec:
+  selector:
+    matchLabels:
+      app: rdma-device-plugin
+
+  template:
+    metadata:
+      labels:
+        app: rdma-device-plugin
+
+    spec:
+      # ============================================================
+      # 关键配置：需要访问主机设备和sysfs
+      # ============================================================
+      containers:
+        - name: device-plugin
+          image: rdma-device-plugin:v1
+          imagePullPolicy: IfNotPresent
+
+          # ============================================================
+          # 挂载必要目录
+          # ============================================================
+          volumeMounts:
+            # Device Plugin socket目录
+            - name: device-plugin
+              mountPath: /var/lib/kubelet/device-plugins
+
+            # RDMA设备目录
+            - name: infiniband
+              mountPath: /dev/infiniband
+
+            # sysfs目录（设备发现需要）
+            - name: sysfs
+              mountPath: /sys
+              readOnly: true
+
+          # ============================================================
+          # 安全配置：需要特权模式
+          # ============================================================
+          securityContext:
+            privileged: true  # 需要特权访问设备文件
+
+      # ============================================================
+      # 主机目录挂载
+      # ============================================================
+      volumes:
+        - name: device-plugin
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+            type: Directory
+
+        - name: infiniband
+          hostPath:
+            path: /dev/infiniband
+            type: Directory
+
+        - name: sysfs
+          hostPath:
+            path: /sys
+            type: Directory
+
+      # ============================================================
+      # 节点选择器：只部署在有RDMA设备的节点
+      # ============================================================
+      # 可选：通过节点标签筛选
+      # nodeSelector:
+      #   has-rdma: "true"

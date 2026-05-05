@@ -1,0 +1,76 @@
+# ============================================================
+# Envoy Bootstrap 配置: xDS 控制面连接配置
+# ============================================================
+#
+# 【核心字段】
+# - node.id: Envoy 节点唯一标识
+# - node.cluster: 所属集群名称
+# - dynamic_resources: 动态资源配置 (LDS/CDS 从 xDS 拉取)
+#
+# 【使用方式】
+# 启动 Envoy 时指定: envoy -c envoy-bootstrap.yaml
+
+node:
+  # ============================================================
+  # 节点标识：用于 xDS Server 识别此 Envoy 实例
+  # ============================================================
+  id: ai-gateway-node-1
+  cluster: ai-gateway-cluster
+  
+  # 【元数据】
+  # 向控制面报告自身能力
+  metadata:
+    # 支持的 xDS 版本
+    xds.version: "v3"
+    
+    # 网关角色
+    gateway.role: "ai-inference"
+
+static_resources:
+  # ============================================================
+  # 静态集群：仅用于连接 xDS 控制面
+  # ============================================================
+  # Envoy 启动后通过此集群连接控制面
+  # 后续的 LDS/RDS/CDS/EDS 都从控制面动态获取
+  
+  clusters:
+    - name: xds_control_plane
+      type: STATIC
+      connect_timeout: 5s
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: xds_control_plane
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 127.0.0.1  # xDS Server 地址
+                      port_value: 18000    # xDS Server 端口
+
+dynamic_resources:
+  # ============================================================
+  # 动态资源配置：从 xDS 控制面拉取
+  # ============================================================
+  
+  # LDS: 监听器发现服务
+  lds_config:
+    ads: {}
+    resource_api_version: V3
+  
+  # CDS: 集群发现服务
+  cds_config:
+    ads: {}
+    resource_api_version: V3
+
+# ============================================================
+# ADS: 聚合发现服务 (统一拉取所有 xDS 资源)
+# ============================================================
+# 使用 ADS 而非单独连接 LDS/CDS 服务
+# 优势：减少连接数、保证配置一致性
+
+ads_config:
+  type: GRPC
+  grpc_services:
+    - target_uri: 127.0.0.1:18000
+      stat_name: xds_control_plane

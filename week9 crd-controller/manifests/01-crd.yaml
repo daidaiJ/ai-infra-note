@@ -1,0 +1,121 @@
+# ============================================================
+# CRD: SampleResource 自定义资源定义
+# ============================================================
+#
+# 【核心字段】
+# - group: sample.ai-infra (API 组)
+# - versions: v1alpha1 (版本)
+# - scope: Namespaced (命名空间级别)
+# - names: 资源名称定义
+#
+# 【使用方式】
+# kubectl apply -f 01-crd.yaml
+# kubectl get crd sampleresources.sample.ai-infra
+
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: sampleresources.sample.ai-infra
+  labels:
+    app.kubernetes.io/name: sample-resource-crd
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  group: sample.ai-infra
+  versions:
+    - name: v1alpha1
+      served: true               # 可通过 API 访问
+      storage: true              # 持久化到 etcd
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - replicas
+                - feature
+              properties:
+                replicas:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  description: "期望副本数"
+                feature:
+                  type: string
+                  enum:
+                    - advanced-scheduling
+                    - basic
+                    - none
+                  description: "启用的特性"
+                image:
+                  type: string
+                  default: "nginx:latest"
+                  description: "容器镜像"
+                port:
+                  type: integer
+                  default: 80
+                  description: "服务端口"
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  description: "当前阶段：Pending/Creating/Running/Failed/Terminating"
+                replicas:
+                  type: integer
+                  description: "实际副本数"
+                availableReplicas:
+                  type: integer
+                  description: "可用副本数"
+                observedGeneration:
+                  type: integer
+                  description: "最后处理的 Generation"
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                        description: "条件类型：Ready/Progressing"
+                      status:
+                        type: string
+                        enum: ["True", "False", "Unknown"]
+                        description: "条件状态"
+                      reason:
+                        type: string
+                        description: "机器可读的原因"
+                      message:
+                        type: string
+                        description: "人类可读的消息"
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                        description: "最后转换时间"
+                      observedGeneration:
+                        type: integer
+                        description: "触发条件的 Generation"
+      # ============================================================
+      # Subresources: 启用 status 子资源
+      # ============================================================
+      # 允许单独更新 status，避免覆盖 spec
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+          description: "当前阶段"
+        - name: Replicas
+          type: integer
+          jsonPath: .spec.replicas
+          description: "期望副本数"
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+          description: "创建时间"
+  scope: Namespaced              # 命名空间级别资源
+  names:
+    plural: sampleresources      # URL 路径（复数）
+    singular: sampleresource     # 单数形式
+    kind: SampleResource         # kind 值
+    shortNames:                  # kubectl 短名称
+      - sr

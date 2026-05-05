@@ -1,0 +1,120 @@
+# ============================================================
+# GPU 感知调度器配置文件
+# ============================================================
+#
+# 【配置说明】
+# - profiles: 定义调度器配置
+# - plugins: 启用/禁用插件
+# - pluginConfig: 插件参数配置
+#
+# 【调度阶段】
+# 1. QueueSort: Pod 排队顺序
+# 2. PreFilter: 预过滤（准备工作）
+# 3. Filter: 过滤不可用节点
+# 4. PostFilter: 过滤后处理（如抢占）
+# 5. PreScore: 预打分准备
+# 6. Score: 节点打分
+# 7. NormalizeScore: 分数归一化
+# 8. Reserve: 资源预留
+# 9. Permit: 许可/等待
+# 10. PreBind: 绑定前处理
+# 11. Bind: 执行绑定
+# 12. PostBind: 绑定后处理
+
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+clientConnection:
+  kubeconfig: /etc/kubernetes/scheduler.conf
+
+profiles:
+  # ============================================================
+  # 调度器 Profile
+  # schedulerName: Pod 通过此名称指定调度器
+  # ============================================================
+  - schedulerName: gpu-scheduler
+
+    # ============================================================
+    # 插件配置
+    # ============================================================
+    plugins:
+
+      # ---------- 预选阶段 (Filter) ----------
+      # 过滤掉不满足条件的节点
+      filter:
+        enabled:
+          # 1. 设备 UUID 匹配（精确绑定特定设备）
+          - name: DeviceUUIDMatcher
+
+          # 2. GPU 利用率均衡（过滤不健康/显存不足节点）
+          - name: GPUUtilizationBalancer
+
+          # 3. 内置插件（保留必要的默认过滤逻辑）
+          - name: NodeUnschedulable    # 节点可调度性
+          - name: NodeName              # Pod 指定节点名
+          - name: TaintToleration       # 污点容忍
+          - name: NodeAffinity          # 节点亲和性
+          - name: NodePorts             # 端口冲突检查
+          - name: NodeResourcesFit      # 资源匹配
+          - name: PodTopologySpread     # Pod 拓扑分布
+
+      # ---------- 优选阶段 (Score) ----------
+      # 为通过过滤的节点打分，分数越高越优先
+      score:
+        enabled:
+          # 1. 设备 UUID 匹配（目标设备节点最高分）
+          - name: DeviceUUIDMatcher
+            weight: 100  # 最高权重，确保精确绑定
+
+          # 2. GPU 利用率均衡（低利用率节点高分）
+          - name: GPUUtilizationBalancer
+            weight: 50   # 中等权重
+
+          # 3. 内置插件
+          - name: NodeResourcesBalancedAllocation  # 资源均衡
+            weight: 1
+          - name: NodeResourcesLeastAllocated      # 资源优先分配
+            weight: 1
+          - name: InterPodAffinity                # Pod 亲和性
+            weight: 1
+          - name: ImageLocality                   # 镜像本地性
+            weight: 1
+
+      # ---------- 绑定阶段 ----------
+      reserve:
+        enabled:
+          - name: GPUUtilizationBalancer  # 预留 GPU 资源
+
+      preBind:
+        enabled:
+          - name: DeviceUUIDMatcher       # 绑定前验证设备可用
+
+    # ============================================================
+    # 插件参数配置
+    # ============================================================
+    pluginConfig:
+
+      # GPU 利用率均衡插件参数
+      - name: GPUUtilizationBalancer
+        args:
+          # 高利用率阈值：超过此值降低调度优先级
+          highUtilizationThreshold: 80
+
+          # 低利用率阈值：低于此值增加调度优先级
+          lowUtilizationThreshold: 30
+
+          # 监控数据源 (prometheus | dcgm | mock)
+          metricsSource: prometheus
+
+          # Prometheus 查询配置
+          prometheusConfig:
+            endpoint: "http://prometheus.monitoring:9090"
+            query: 'avg(DCGM_FI_DEV_GPU_UTIL{node=~"{{.NodeName}}"})'
+
+      # 设备 UUID 匹配插件参数
+      - name: DeviceUUIDMatcher
+        args:
+          # 是否强制要求设备必须存在
+          strictMode: true
+
+          # 设备健康检查
+          healthCheckEnabled: true

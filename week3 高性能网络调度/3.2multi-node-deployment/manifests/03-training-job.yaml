@@ -1,0 +1,185 @@
+# ============================================================
+# 分布式训练任务部署
+# ============================================================
+#
+# 【核心配置】
+# - parallelism: 并行节点数（4节点）
+# - NCCL环境变量配置
+# - RDMA通信优化
+#
+# 【使用方式】
+# kubectl apply -f 03-training-job.yaml
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: distributed-training
+  namespace: ai-workloads
+  labels:
+    app: training
+    network: rdma
+spec:
+  parallelism: 4              # ← 4节点并行训练
+  completions: 4
+  backoffLimit: 3
+
+  template:
+    metadata:
+      labels:
+        app: training
+        network: rdma
+      annotations:
+        # ============================================================
+        # RDMA网络附加
+        # ============================================================
+        k8s.v1.cni.cncf.io/networks: rdma-network
+
+    spec:
+      # ============================================================
+      # 节点选择器
+      # ============================================================
+      nodeSelector:
+        has-rdma: "true"
+        gpu-type: "nvidia-a100"
+
+      # ============================================================
+      # Pod反亲和性（分散到不同节点）
+      # ============================================================
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: training
+              topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: pytorch
+          image: pytorch-distributed:v1
+          imagePullPolicy: IfNotPresent
+
+          # ============================================================
+          # NCCL环境变量配置（关键）
+          # ============================================================
+          env:
+            # ============================================================
+            # RDMA传输配置
+            # ============================================================
+            - name: NCCL_IB_DISABLE
+              value: "0"              # ← 启用IB/RDMA传输
+
+            - name: NCCL_IB_HCA
+              value: "^mlx5_0"        # ← 指定RDMA设备
+
+            - name: NCCL_SOCKET_IFNAME
+              value: "^eth0"          # ← Socket备用接口
+
+            # ============================================================
+            # 调试与日志
+            # ============================================================
+            - name: NCCL_DEBUG
+              value: INFO             # ← 调试日志级别
+
+            - name: NCCL_DEBUG_FILE
+              value: /tmp/nccl.log
+
+            # ============================================================
+            # 拓扑优化
+            # ============================================================
+            - name: NCCL_P2P_DISABLE
+              value: "0"              # ← 启用P2P传输
+
+            - name: NCCL_P2P_LEVEL
+              value: SYS              # ← 跨节点P2P
+
+            - name: NCCL_ALGO
+              value: Ring             # ← Ring算法（适合大集群）
+
+            - name: NCCL_PROTO
+              value: Simple           # ← Simple协议
+
+            # ============================================================
+            # 训练配置
+            # ============================================================
+            - name: WORLD_SIZE
+              value: "4"              # ← 总节点数
+
+            - name: MASTER_ADDR
+              value: "training-master"    # ← Master节点地址
+
+            - name: MASTER_PORT
+              value: "29500"
+
+          # ============================================================
+          # 资源配置
+          # ============================================================
+          resources:
+            limits:
+              nvidia.com/gpu: 2       # ← 每节点2 GPU
+              rdma/ib: 1              # ← RDMA网卡
+              cpu: "16"
+              memory: "64Gi"
+            requests:
+              cpu: "16"
+              memory: "64Gi"
+
+          # ============================================================
+          # 命令配置
+          # ============================================================
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # ============================================================
+              # 等待所有节点就绪
+              # ============================================================
+              echo "Waiting for all nodes..."
+
+              # ============================================================
+              # 启动训练
+              # ============================================================
+              python train.py \
+                --world-size=${WORLD_SIZE} \
+                --master-addr=${MASTER_ADDR} \
+                --master-port=${MASTER_PORT}
+
+          # ============================================================
+          # 卷挂载
+          # ============================================================
+          volumeMounts:
+            - name: training-data
+              mountPath: /data
+            - name: model-output
+              mountPath: /output
+
+      # ============================================================
+      # 卷配置
+      # ============================================================
+      volumes:
+        - name: training-data
+          persistentVolumeClaim:
+            claimName: training-data-pvc
+
+        - name: model-output
+          persistentVolumeClaim:
+            claimName: model-output-pvc
+
+---
+# ============================================================
+# 训练Master服务（协调节点）
+# ============================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: training-master
+  namespace: ai-workloads
+spec:
+  type: ClusterIP
+  selector:
+    app: training
+    role: master
+  ports:
+    - port: 29500
+      targetPort: 29500
+      name: nccl-port

@@ -1,0 +1,211 @@
+# ============================================================
+# GPU Pod 示例
+# ============================================================
+#
+# 【三种配置模式对比】
+# - Legacy 模式：环境变量驱动
+# - CDI 模式：声明式设备描述（推荐）
+#
+# ============================================================
+
+---
+# ============================================================
+# 示例 1: Legacy 模式 GPU Pod
+# ============================================================
+# 【特点】
+# - 使用环境变量 NVIDIA_VISIBLE_DEVICES 指定 GPU
+# - 需要配置运行时为 nvidia-container-runtime
+# - 传统方式，不推荐在生产环境使用
+# ============================================================
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-pod-legacy
+  labels:
+    app: cuda-test
+spec:
+  # 运行时类名（需要在节点上配置）
+  runtimeClassName: nvidia
+  containers:
+  - name: cuda
+    image: nvcr.io/nvidia/cuda:12.0.0-base-ubuntu22.04
+    command: ["nvidia-smi"]
+    env:
+    # ============================================================
+    # Legacy 模式核心配置
+    # ============================================================
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "0,1"              # 指定 GPU ID
+    - name: NVIDIA_DRIVER_CAPABILITIES
+      value: "compute,utility"  # 指定能力
+    resources:
+      limits:
+        nvidia.com/gpu: 2       # 请求 2 个 GPU
+    restartPolicy: OnFailure
+
+---
+# ============================================================
+# 示例 2: CDI 模式 GPU Pod（推荐）
+# ============================================================
+# 【特点】
+# - 使用 CDI 声明式设备描述
+# - 运行时原生支持，标准化配置
+# - 可移植性强，生产环境推荐
+# ============================================================
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-pod-cdi
+  labels:
+    app: cuda-test-cdi
+spec:
+  # CDI 运行时类名
+  runtimeClassName: nvidia-cdi
+  containers:
+  - name: cuda
+    image: nvcr.io/nvidia/cuda:12.0.0-base-ubuntu22.04
+    command: ["nvidia-smi"]
+    resources:
+      limits:
+        nvidia.com/gpu: 2       # 请求 2 个 GPU
+    restartPolicy: OnFailure
+
+---
+# ============================================================
+# 示例 3: GPU 资源请求 Pod
+# ============================================================
+# 【特点】
+# - 通过 Device Plugin 上报的资源请求 GPU
+# - 最常用的方式
+# ============================================================
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-pod-resource
+  labels:
+    app: cuda-app
+spec:
+  containers:
+  - name: cuda-app
+    image: nvcr.io/nvidia/cuda:12.0.0-base-ubuntu22.04
+    command:
+    - "/bin/bash"
+    - "-c"
+    - |
+      nvidia-smi
+      sleep 3600
+    resources:
+      limits:
+        nvidia.com/gpu: 1       # 请求 1 个 GPU
+      requests:
+        memory: "512Mi"
+        cpu: "500m"
+    volumeMounts:
+    - name: cuda-lib
+      mountPath: /usr/local/cuda
+      readOnly: true
+  volumes:
+  - name: cuda-lib
+    hostPath:
+      path: /usr/local/cuda
+      type: Directory
+  restartPolicy: OnFailure
+
+---
+# ============================================================
+# 示例 4: 多容器 GPU Pod
+# ============================================================
+# 【特点】
+# - 一个 Pod 内多个容器共享 GPU
+# - 使用 NVIDIA_VISIBLE_DEVICES=all
+# ============================================================
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-pod-multi-container
+  labels:
+    app: gpu-multi
+spec:
+  runtimeClassName: nvidia
+  containers:
+  # 主容器
+  - name: main-app
+    image: nvcr.io/nvidia/cuda:12.0.0-base-ubuntu22.04
+    command: ["python", "train.py"]
+    env:
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "all"
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+        memory: "4Gi"
+        cpu: "2"
+    volumeMounts:
+    - name: data
+      mountPath: /data
+    - name: model
+      mountPath: /model
+
+  # Sidecar 容器
+  - name: monitor
+    image: nvcr.io/nvidia/cuda:12.0.0-base-ubuntu22.04
+    command:
+    - "/bin/bash"
+    - "-c"
+    - |
+      while true; do
+        nvidia-smi
+        sleep 60
+      done
+    env:
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "all"
+    resources:
+      limits:
+        nvidia.com/gpu: 1  # 共享同一个 GPU
+        memory: "256Mi"
+        cpu: "100m"
+
+  volumes:
+  - name: data
+    emptyDir: {}
+  - name: model
+    emptyDir: {}
+  restartPolicy: OnFailure
+
+---
+# ============================================================
+# 示例 5: GPU Job
+# ============================================================
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gpu-job
+spec:
+  replicas: 1
+  template:
+    metadata:
+      name: gpu-job
+    spec:
+      runtimeClassName: nvidia-cdi
+      containers:
+      - name: cuda-job
+        image: nvcr.io/nvidia/cuda:12.0.0-base-ubuntu22.04
+        command:
+        - "/bin/bash"
+        - "-c"
+        - |
+          nvidia-smi
+          # 执行 CUDA 计算任务
+          python compute.py
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+            memory: "8Gi"
+            cpu: "4"
+      restartPolicy: OnFailure

@@ -1,0 +1,142 @@
+# ============================================================
+# Mooncake Proxy代理服务部署
+# ============================================================
+#
+# 【核心功能】
+# - 路由客户端请求到Prefill节点
+# - 收集Decode节点响应返回客户端
+# - 协调KVCache传输时机
+#
+# 【必须部署】
+# PD分离架构中，Proxy是必须组件，否则请求无法正确路由
+#
+# ============================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mooncake-proxy
+  labels:
+    app: mooncake-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mooncake-proxy
+  template:
+    metadata:
+      labels:
+        app: mooncake-proxy
+    spec:
+      containers:
+        - name: proxy
+          image: python:3.11-slim
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # 安装依赖
+              pip install requests
+
+              # Proxy服务脚本
+              # 参考：vLLM examples/online_serving/disaggregated_serving/mooncake_connector/mooncake_connector_proxy.py
+              python /scripts/mooncake_connector_proxy.py \
+                --prefill http://vllm-prefill-service:8010 \
+                --decode http://vllm-decode-service:8020 \
+                --port 8000
+
+          ports:
+            - containerPort: 8000
+              name: proxy-api
+
+          volumeMounts:
+            - name: proxy-scripts
+              mountPath: /scripts
+
+          resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi
+            requests:
+              cpu: "1"
+              memory: 2Gi
+
+      volumes:
+        - name: proxy-scripts
+          configMap:
+            name: mooncake-proxy-scripts
+
+---
+# ============================================================
+# Proxy服务暴露（客户端请求入口）
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: mooncake-proxy-service
+spec:
+  selector:
+    app: mooncake-proxy
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: proxy-api
+  type: LoadBalancer  # 或 ClusterIP 根据环境选择
+
+---
+# ============================================================
+# Proxy脚本ConfigMap
+# ============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mooncake-proxy-scripts
+data:
+  mooncake_connector_proxy.py: |
+    # ============================================================
+    # Mooncake Proxy代理服务脚本
+    # ============================================================
+    # 此脚本参考vLLM官方示例：
+    # https://github.com/vllm-project/vllm/tree/main/examples/online_serving/disaggregated_serving/mooncake_connector
+
+    import argparse
+    import requests
+    from flask import Flask, request, jsonify
+
+    app = Flask(__name__)
+
+    # 解析参数
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--prefill', required=True)
+    parser.add_argument('--decode', required=True)
+    parser.add_argument('--port', type=int, default=8000)
+    args = parser.parse_args()
+
+    PREFILL_URL = args.prefill
+    DECODE_URL = args.decode
+
+    @app.route('/v1/completions', methods=['POST'])
+    def completions():
+        # 路由请求到Prefill节点
+        prefill_resp = requests.post(
+            f"{PREFILL_URL}/v1/completions",
+            json=request.json,
+            headers=request.headers
+        )
+        return jsonify(prefill_resp.json()), prefill_resp.status_code
+
+    @app.route('/v1/chat/completions', methods=['POST'])
+    def chat_completions():
+        prefill_resp = requests.post(
+            f"{PREFILL_URL}/v1/chat/completions",
+            json=request.json,
+            headers=request.headers
+        )
+        return jsonify(prefill_resp.json()), prefill_resp.status_code
+
+    @app.route('/health', methods=['GET'])
+    def health():
+        return {"status": "healthy"}
+
+    if __name__ == '__main__':
+        app.run(host='0.0.0.0', port=args.port)

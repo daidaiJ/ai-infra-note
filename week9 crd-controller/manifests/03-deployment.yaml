@@ -1,0 +1,119 @@
+# ============================================================
+# Deployment: 控制器部署
+# ============================================================
+#
+# 【核心配置】
+# - replicas: 1（单实例，Leader Election 保证高可用）
+# - resources: 资源限制
+# - env: 环境变量
+# - args: 启动参数
+#
+# 【使用方式】
+# kubectl apply -f 03-deployment.yaml
+# kubectl get pods -l app=sample-controller
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-controller
+  namespace: default
+  labels:
+    app: sample-controller
+    app.kubernetes.io/name: sample-controller
+    app.kubernetes.io/version: v1alpha1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-controller
+  strategy:
+    type: Recreate               # 重建策略，避免多 Leader
+  template:
+    metadata:
+      labels:
+        app: sample-controller
+    spec:
+      # ============================================================
+      # ServiceAccount: 使用 RBAC 定义的身份
+      # ============================================================
+      serviceAccountName: sample-controller-sa
+      
+      # ============================================================
+      # 容器配置
+      # ============================================================
+      containers:
+        - name: controller
+          # 镜像构建后替换为实际地址
+          image: sample-controller:latest
+          imagePullPolicy: IfNotPresent
+          
+          # 启动命令
+          command: ["/manager"]
+          
+          # 启动参数
+          args:
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+            - --leader-elect
+            - --v=1
+          
+          # ============================================================
+          # 资源限制
+          # ============================================================
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          
+          # ============================================================
+          # 环境变量
+          # ============================================================
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          
+          # ============================================================
+          # 端口暴露
+          # ============================================================
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          
+          # ============================================================
+          # 健康检查
+          # ============================================================
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      
+      # ============================================================
+      # 容忍度（可选）
+      # ============================================================
+      tolerations:
+        - key: "node.kubernetes.io/not-ready"
+          operator: "Exists"
+          effect: "NoExecute"
+          tolerationSeconds: 300

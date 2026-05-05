@@ -1,0 +1,163 @@
+# ============================================================
+# vLLM与LMCache集成配置
+# ============================================================
+#
+# 【集成方式】
+# - LMCacheMPConnector: MP模式，连接独立LMCache Server
+# - LMCacheConnectorV1: In-process模式，嵌入vLLM进程
+#
+# 【推荐】
+# 生产环境使用MP模式
+#
+# ============================================================
+
+---
+# ============================================================
+# vLLM MP模式集成（推荐生产）
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-lmcache-mp
+  labels:
+    app: vllm-lmcache
+spec:
+  replicas: 2  # 多实例共享KVCache
+  selector:
+    matchLabels:
+      app: vllm-lmcache
+  template:
+    metadata:
+      labels:
+        app: vllm-lmcache
+    spec:
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest
+          command:
+            - vllm
+            - serve
+            - Qwen/Qwen3-8B
+            - --port=8000
+            - --gpu-memory-utilization=0.85
+            - --enable-prefix-caching
+            # ============================================================
+            # LMCache MP模式Connector
+            # ============================================================
+            - --kv-transfer-config
+            - '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both"}'
+
+          env:
+            # ============================================================
+            # LMCache环境变量
+            # ============================================================
+            - name: LMCACHE_CONFIG_FILE
+              value: /config/lmc_config.yaml
+
+          ports:
+            - containerPort: 8000
+              name: vllm-api
+
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              memory: 32Gi
+            requests:
+              nvidia.com/gpu: 1
+              memory: 32Gi
+
+          volumeMounts:
+            - name: lmcache-config
+              mountPath: /config
+            - name: model-cache
+              mountPath: /models
+
+      volumes:
+        - name: lmcache-config
+          configMap:
+            name: lmcache-config
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc
+
+---
+# ============================================================
+# vLLM In-process模式（测试环境）
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vllm-lmcache-inprocess
+spec:
+  containers:
+    - name: vllm
+      image: vllm/vllm-openai:latest
+      command:
+        - /bin/bash
+        - -c
+        - |
+          # ============================================================
+          # In-process模式：单命令启动
+          # ============================================================
+          LMCACHE_CHUNK_SIZE=256 \
+          LMCACHE_LOCAL_CPU=true \
+          LMCACHE_MAX_LOCAL_CPU_SIZE=20 \
+          vllm serve Qwen/Qwen3-8B \
+            --port 8000 \
+            --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
+
+      ports:
+        - containerPort: 8000
+
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+          memory: 32Gi
+
+---
+# ============================================================
+# vLLM简化配置（0.6.0+）
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vllm-kv-offloading
+spec:
+  containers:
+    - name: vllm
+      image: vllm/vllm-openai:latest
+      command:
+        - vllm
+        - serve
+        - Qwen/Qwen3-8B
+        # ============================================================
+        # vLLM内置KV卸载参数（简化）
+        # ============================================================
+        - --kv-offloading-backend=lmcache
+        - --kv-offloading-size=20
+        - --disable-hybrid-kv-cache-manager
+
+      ports:
+        - containerPort: 8000
+
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+          memory: 32Gi
+
+---
+# ============================================================
+# vLLM服务暴露
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-lmcache-service
+spec:
+  selector:
+    app: vllm-lmcache
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: vllm-api
+  type: ClusterIP

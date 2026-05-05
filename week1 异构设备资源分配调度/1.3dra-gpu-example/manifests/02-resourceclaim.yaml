@@ -1,0 +1,135 @@
+# ============================================================
+# DRA 示例 2: ResourceClaim - 资源声明
+# ============================================================
+#
+# ResourceClaim 是对具体资源的请求声明
+# 类似于 PVC（PersistentVolumeClaim），但用于硬件资源
+#
+# 【核心字段】
+# - deviceClassName: 引用的 ResourceClass
+# - allocationMode: 分配模式 (ExactCount / AllDevices)
+# - constraints: 约束条件（可选）
+#
+# 【生命周期】
+# 1. 创建 → Pending (等待分配)
+# 2. Driver 分配 → Allocated (已分配，绑定到具体设备)
+# 3. Pod 使用 → Reserved (被 Pod 使用)
+# 4. Pod 删除 → Released (释放，可被其他 Pod 使用)
+# 5. 手动删除 → 终止
+#
+
+---
+# ============================================================
+# ResourceClaim 示例 1: 简单 GPU 请求
+# ============================================================
+apiVersion: resource.k8s.io/v1beta1
+kind: ResourceClaim
+metadata:
+  name: gpu-claim-training
+spec:
+  # 引用 ResourceClass
+  deviceClassName: gpu-class-a100
+
+  # ============================================================
+  # 设备请求列表
+  # ============================================================
+  devices:
+    requests:
+      - name: gpu-0           # 请求名称（Pod 中引用）
+        
+        # ============================================================
+        # 分配模式
+        # ============================================================
+        # - ExactCount: 精确数量分配
+        # - AllDevices: 获取节点上的所有设备（用于独占节点）
+        allocationMode: ExactCount
+        
+        # 请求的设备数量
+        count: 2
+
+---
+# ============================================================
+# ResourceClaim 示例 2: 带约束的 GPU 请求
+# ============================================================
+apiVersion: resource.k8s.io/v1beta1
+kind: ResourceClaim
+metadata:
+  name: gpu-claim-with-constraints
+spec:
+  deviceClassName: gpu-class-a100
+
+  devices:
+    requests:
+      - name: gpu-0
+        allocationMode: ExactCount
+        count: 1
+
+        # ============================================================
+        # 设备约束：限制可分配的设备范围
+        # ============================================================
+        constraints:
+          # CEL 表达式约束
+          - cel:
+              expression: "device.attributes['gpu-driver'].memory >= 65536"
+              message: "需要显存至少 64GB"
+
+          # NUMA 感知约束
+          - cel:
+              expression: "device.attributes['gpu-driver'].numaNode == numaNode()"
+              message: "设备 NUMA 节点与 Pod NUMA 节点匹配"
+
+    # ============================================================
+    # 分配配置（可选）
+    # ============================================================
+    allocation:
+      # 是否支持多个 Pod 共享此 Claim
+      shareable: false  # 独占使用
+
+---
+# ============================================================
+# ResourceClaim 示例 3: 全节点设备请求
+# ============================================================
+# 用于需要独占整个节点 GPU 的场景（如大规模训练）
+apiVersion: resource.k8s.io/v1beta1
+kind: ResourceClaim
+metadata:
+  name: gpu-claim-all-devices
+spec:
+  deviceClassName: gpu-class-h100-exclusive
+
+  devices:
+    requests:
+      - name: all-gpus
+        # 获取节点上所有匹配的设备
+        allocationMode: AllDevices
+
+---
+# ============================================================
+# ResourceClaim 示例 4: 多种设备混合请求
+# ============================================================
+# 同时请求 GPU 和 RDMA NIC（网络加速）
+apiVersion: resource.k8s.io/v1beta1
+kind: ResourceClaim
+metadata:
+  name: mixed-device-claim
+spec:
+  devices:
+    requests:
+      # GPU 请求
+      - name: gpu-0
+        deviceClassName: gpu-class-a100
+        allocationMode: ExactCount
+        count: 1
+
+      # RDMA NIC 请求（假设有另一个 ResourceClass）
+      - name: rdma-0
+        deviceClassName: rdma-class-mlx5
+        allocationMode: ExactCount
+        count: 1
+
+    # 跨设备约束：GPU 和 NIC 在同一 NUMA 节点
+    constraints:
+      - cel:
+          expression: |
+            device.requests['gpu-0'].attributes['numaNode'] == 
+            device.requests['rdma-0'].attributes['numaNode']

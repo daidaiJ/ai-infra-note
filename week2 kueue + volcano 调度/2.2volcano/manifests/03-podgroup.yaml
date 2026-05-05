@@ -1,0 +1,141 @@
+# ============================================================
+# PodGroup: 调度组配置
+# ============================================================
+#
+# 【核心字段】
+# - minMember: Gang调度最小成员数
+# - queue: 所属队列
+#
+# 【使用方式】
+# 1. Volcano Job自动创建PodGroup
+# 2. 手动创建PodGroup用于普通Pod
+# 3. Pod通过annotation关联PodGroup
+#
+# 【注意】
+# - Job创建的PodGroup由Volcano管理
+# - 手动创建PodGroup用于自定义场景
+
+---
+# ============================================================
+# 示例1: Job自动创建的PodGroup（示意）
+# ============================================================
+# Volcano Job会自动创建同名PodGroup
+# 以下为Job创建后生成的PodGroup结构示意
+
+apiVersion: scheduling.volcano.sh/v1beta1
+kind: PodGroup
+metadata:
+  name: distributed-training-8gpu    # 与Job同名
+  ownerReferences:
+    - apiVersion: batch.volcano.sh/v1alpha1
+      kind: Job
+      name: distributed-training-8gpu
+spec:
+  # ============================================================
+  # minMember来自Job.spec.minAvailable
+  # ============================================================
+  minMember: 8
+
+  # ============================================================
+  # queue来自Job.spec.queue
+  # ============================================================
+  queue: training-queue
+
+---
+# ============================================================
+# 示例2: 手动创建PodGroup（普通Pod）
+# ============================================================
+# 用于普通Pod实现Gang调度
+
+apiVersion: scheduling.volcano.sh/v1beta1
+kind: PodGroup
+metadata:
+  name: custom-gang-group
+spec:
+  minMember: 3              # 必须同时调度3个Pod
+  queue: training-queue
+
+---
+# ============================================================
+# Pod关联PodGroup（通过annotation）
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gang-pod-1
+  annotations:
+    # ============================================================
+    # 指定所属PodGroup
+    # ============================================================
+    scheduling.volcano.sh/group-name: custom-gang-group
+spec:
+  containers:
+    - name: app
+      image: app:latest
+      resources:
+        limits:
+          nvidia.com/gpu: "1"
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gang-pod-2
+  annotations:
+    scheduling.volcano.sh/group-name: custom-gang-group
+spec:
+  containers:
+    - name: app
+      image: app:latest
+      resources:
+        limits:
+          nvidia.com/gpu: "1"
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gang-pod-3
+  annotations:
+    scheduling.volcano.sh/group-name: custom-gang-group
+spec:
+  containers:
+    - name: app
+      image: app:latest
+      resources:
+        limits:
+          nvidia.com/gpu: "1"
+
+---
+# ============================================================
+# 示例3: MPIJob的PodGroup（示意）
+# ============================================================
+# MPIJob也会创建PodGroup用于Gang调度
+
+apiVersion: scheduling.volcano.sh/v1beta1
+kind: PodGroup
+metadata:
+  name: mpi-training
+  ownerReferences:
+    - apiVersion: batch.volcano.sh/v1alpha1
+      kind: MPIJob
+      name: mpi-training
+spec:
+  minMember: 5              # 1 Launcher + 4 Worker
+  queue: mpi-queue
+
+---
+# ============================================================
+# 示例4: TFJob的PodGroup（示意）
+# ============================================================
+apiVersion: scheduling.volcano.sh/v1beta1
+kind: PodGroup
+metadata:
+  name: tf-training
+  ownerReferences:
+    - apiVersion: batch.volcano.sh/v1alpha1
+      kind: TFJob
+      name: tf-training
+spec:
+  minMember: 3              # 1 PS + 2 Worker
+  queue: tf-queue

@@ -1,0 +1,215 @@
+# ============================================================
+# Volcano Job: 批处理任务配置
+# ============================================================
+#
+# 【核心字段】
+# - minAvailable: Gang调度最小可用Pod数
+# - queue: 所属队列名称
+# - tasks: 任务模板列表
+# - plugins: 调度插件配置
+#
+# 【使用方式】
+# 1. 定义Job指定minAvailable和queue
+# 2. Volcano自动创建PodGroup
+# 3. Gang调度保证同时启动
+
+---
+# ============================================================
+# 示例1: 4节点8GPU分布式训练
+# ============================================================
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: distributed-training-8gpu
+spec:
+  # ============================================================
+  # Gang调度：必须8个Pod同时可用才启动
+  # ============================================================
+  minAvailable: 8              # 严格All-or-Nothing
+
+  # ============================================================
+  # 所属队列
+  # ============================================================
+  queue: training-queue
+
+  # ============================================================
+  # 调度插件配置
+  # ============================================================
+  plugins:
+    gang:                       # 启用Gang调度
+      minAvailable: 8
+    share:                      # 启用公平分享
+    priority:                   # 启用优先级
+
+  # ============================================================
+  # 任务模板：8个Worker
+  # ============================================================
+  tasks:
+    - replicas: 8
+      name: worker
+      template:
+        spec:
+          containers:
+            - name: pytorch
+              image: pytorch/pytorch:2.0.1-cuda11.8
+              command: ["python", "train.py"]
+              resources:
+                requests:
+                  cpu: "4"
+                  memory: "16Gi"
+                  nvidia.com/gpu: "1"    # 每个Pod1张GPU
+                limits:
+                  nvidia.com/gpu: "1"
+          restartPolicy: OnFailure
+
+---
+# ============================================================
+# 示例2: Master-Worker分布式训练
+# ============================================================
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: master-worker-training
+spec:
+  minAvailable: 5              # 1 Master + 4 Worker
+
+  queue: training-queue
+
+  plugins:
+    gang:
+      minAvailable: 5
+
+  tasks:
+    # ============================================================
+    # Master节点：1个
+    # ============================================================
+    - replicas: 1
+      name: master
+      template:
+        spec:
+          containers:
+            - name: master
+              image: pytorch/pytorch:latest
+              command: ["python", "master.py"]
+              resources:
+                limits:
+                  nvidia.com/gpu: "1"
+          restartPolicy: OnFailure
+
+    # ============================================================
+    # Worker节点：4个
+    # ============================================================
+    - replicas: 4
+      name: worker
+      template:
+        spec:
+          containers:
+            - name: worker
+              image: pytorch/pytorch:latest
+              command: ["python", "worker.py"]
+              resources:
+                limits:
+                  nvidia.com/gpu: "2"
+          restartPolicy: OnFailure
+
+---
+# ============================================================
+# 示例3: 弹性训练（允许部分节点故障）
+# ============================================================
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: elastic-training
+spec:
+  # ============================================================
+  # 弹性训练：最少4个Worker即可启动
+  # ============================================================
+  minAvailable: 4              # 最少可用数，小于总副本数
+
+  queue: training-queue
+
+  tasks:
+    - replicas: 8              # 总副本数8个
+      name: worker
+      template:
+        spec:
+          containers:
+            - name: pytorch-elastic
+              image: pytorch/pytorch:latest
+              resources:
+                limits:
+                  nvidia.com/gpu: "1"
+
+---
+# ============================================================
+# 示例4: 推理服务批处理
+# ============================================================
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: batch-inference
+spec:
+  minAvailable: 3              # 3个推理实例
+
+  queue: inference-queue
+
+  tasks:
+    - replicas: 3
+      name: inference
+      template:
+        spec:
+          containers:
+            - name: inference
+              image: inference-server:latest
+              command: ["python", "inference.py"]
+              resources:
+                limits:
+                  nvidia.com/gpu: "1"
+
+---
+# ============================================================
+# 示例5: 任务依赖链
+# ============================================================
+# 数据准备任务
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: data-prep
+spec:
+  minAvailable: 1
+  queue: training-queue
+  tasks:
+    - replicas: 1
+      name: prep
+      template:
+        spec:
+          containers:
+            - name: prep
+              image: data-prep:latest
+              command: ["python", "prepare_data.py"]
+
+---
+# 训练任务（依赖数据准备完成）
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: training-after-prep
+spec:
+  minAvailable: 4
+
+  # ============================================================
+  # 任务依赖：等待data-prep完成
+  # ============================================================
+  depends:
+    - name: data-prep
+      status: Complete         # 必须完成状态
+
+  queue: training-queue
+  tasks:
+    - replicas: 4
+      name: worker
+      template:
+        spec:
+          containers:
+            - name: training
+              image: training:latest

@@ -1,0 +1,3 @@
+[submodule "week7 llm-d-inference/llm-d-inference-scheduler"]
+	path = week7 llm-d-inference/llm-d-inference-scheduler
+	url = https://github.com/llm-d/llm-d-inference-scheduler.git

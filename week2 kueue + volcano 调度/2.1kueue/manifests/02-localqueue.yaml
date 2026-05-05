@@ -1,0 +1,112 @@
+# ============================================================
+# LocalQueue: 命名空间级队列（提交入口）
+# ============================================================
+#
+# 【核心字段】
+# - clusterQueue: 关联的ClusterQueue名称
+#
+# 【使用方式】
+# 1. 在命名空间创建LocalQueue
+# 2. 关联到对应的ClusterQueue
+# 3. 用户提交Workload时指定LocalQueue名称
+#
+# 【注意】
+# - LocalQueue必须在ClusterQueue的namespaceSelector允许的命名空间中
+
+---
+# ============================================================
+# 示例1: 核心团队命名空间配置
+# ============================================================
+# 首先创建命名空间并打标签
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: core-team
+  labels:
+    team: core              # ClusterQueue的namespaceSelector匹配此标签
+
+---
+# 核心团队的LocalQueue
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: core-queue
+  namespace: core-team
+spec:
+  # ============================================================
+  # 关联ClusterQueue：任务路由到配额队列
+  # ============================================================
+  clusterQueue: core-team-queue
+
+---
+# ============================================================
+# 示例2: 研究团队命名空间配置
+# ============================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: research-team
+  labels:
+    team: research
+
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: research-queue
+  namespace: research-team
+spec:
+  clusterQueue: research-team-queue
+
+---
+# ============================================================
+# 示例3: 临时团队命名空间配置
+# ============================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: temp-team
+  labels:
+    team: temp
+
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: temp-queue
+  namespace: temp-team
+spec:
+  clusterQueue: temp-team-queue
+
+---
+# ============================================================
+# 示例4: PriorityClass定义（优先级抢占）
+# ============================================================
+# 高优先级：核心业务任务
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: high-priority
+value: 1000
+globalDefault: false
+description: "核心业务高优先级，可抢占其他任务"
+
+---
+# 中优先级：研究任务
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: medium-priority
+value: 500
+globalDefault: true
+description: "研究任务中等优先级"
+
+---
+# 低优先级：临时任务
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: low-priority
+value: 100
+globalDefault: false
+description: "临时任务低优先级，可被抢占"

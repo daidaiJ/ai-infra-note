@@ -1,0 +1,106 @@
+# ============================================================
+# NetworkAttachmentDefinition配置
+# ============================================================
+#
+# 【核心字段】
+# - type: CNI插件类型（host-device/sriov）
+# - device: RDMA设备名
+# - ipam: IP地址管理配置
+#
+# 【使用方式】
+# kubectl apply -f 01-network-attachment.yaml
+
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: rdma-network
+  namespace: ai-workloads
+  labels:
+    network-type: rdma
+    network-speed: "100G"
+spec:
+  config: |
+    {
+      "type": "host-device",
+      "device": "mlx5_0",            # ← 指定RDMA设备
+      "name": "rdma-net",
+
+      # ============================================================
+      # IPAM配置：IP地址管理
+      # ============================================================
+      "ipam": {
+        "type": "host-local",
+        "subnet": "192.168.100.0/24",
+        "rangeStart": "192.168.100.10",
+        "rangeEnd": "192.168.100.200",
+        "gateway": "192.168.100.1"
+      }
+    }
+
+---
+# ============================================================
+# 多网络配置示例（主网络 + RDMA网络）
+# ============================================================
+
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: backup-network
+  namespace: ai-workloads
+spec:
+  config: |
+    {
+      "type": "macvlan",
+      "master": "eth0",
+      "mode": "bridge",
+      "name": "backup-net",
+      "ipam": {
+        "type": "host-local",
+        "subnet": "10.0.0.0/24"
+      }
+    }
+
+---
+# ============================================================
+# SR-IOV VF配置（多Pod共享网卡）
+# ============================================================
+#
+# 【前提条件】
+# - 主机已创建VF: echo N > /sys/class/net/mlx5_0/device/sriov_numvfs
+
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: sriov-rdma-0
+  namespace: ai-workloads
+spec:
+  config: |
+    {
+      "type": "sriov",
+      "deviceID": "mlx5_0",          # ← PF设备
+      "vf": 0,                       # ← VF编号
+      "name": "sriov-rdma",
+      "ipam": {
+        "type": "host-local",
+        "subnet": "192.168.101.0/24"
+      }
+    }
+
+---
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: sriov-rdma-1
+  namespace: ai-workloads
+spec:
+  config: |
+    {
+      "type": "sriov",
+      "deviceID": "mlx5_0",
+      "vf": 1,
+      "name": "sriov-rdma",
+      "ipam": {
+        "type": "host-local",
+        "subnet": "192.168.102.0/24"
+      }
+    }
